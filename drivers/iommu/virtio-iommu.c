@@ -36,6 +36,7 @@
 #include <linux/virtio_config.h>
 #include <linux/virtio_ids.h>
 #include <linux/wait.h>
+#include <linux/vmalloc.h>
 
 #include <uapi/linux/virtio_iommu.h>
 
@@ -90,8 +91,17 @@ struct viommu_request {
 
 /* TODO: use an IDA */
 static atomic64_t viommu_domain_ids_gen;
+/* HACK: stores the only virtio-iommu object. */
+static struct viommu_dev *viommu_global;
 
 #define to_viommu_domain(domain) container_of(domain, struct viommu_domain, domain)
+
+static inline u16 __pci_device_id(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	return PCI_DEVID(pdev->bus->number, pdev->devfn);
+}
 
 /* Virtio transport */
 
@@ -371,6 +381,9 @@ static int viommu_tlb_map(struct viommu_domain *vdomain, unsigned long iova,
 	interval_tree_insert(&mapping->iova, &vdomain->mappings);
 	spin_unlock_irqrestore(&vdomain->mappings_lock, flags);
 
+	pr_debug("VIOMMU: %s: iova 0x%lx -> 0x%llx (size 0x%lx)\n",
+		 __func__, iova, paddr, size);
+
 	return 0;
 }
 
@@ -455,10 +468,15 @@ static void viommu_domain_free(struct iommu_domain *domain)
 
 static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
-	int i;
 	int ret = 0;
+#ifndef CONFIG_X86
+	int i;
 	struct iommu_fwspec *fwspec = dev->iommu_fwspec;
 	struct viommu_endpoint *vdev = fwspec->iommu_priv;
+	struct viommu_dev *viommu = vdev->viommu;
+#else
+	struct viommu_dev *viommu = viommu_global;
+#endif
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
 	struct virtio_iommu_req_attach req = {
 		.head.type	= VIRTIO_IOMMU_T_ATTACH,
@@ -471,16 +489,22 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 		 * Initialize the domain proper now that we know which viommu
 		 * owns it.
 		 */
-		struct viommu_dev *viommu = vdev->viommu;
-
 		vdomain->viommu = viommu;
 
 		domain->pgsize_bitmap		= viommu->pgsize_bitmap;
 		domain->geometry.aperture_start	= viommu->aperture_start;
 		domain->geometry.aperture_end	= viommu->aperture_end;
 		domain->geometry.force_aperture	= true;
-
-	} else if (vdomain->viommu != vdev->viommu) {
+#ifdef CONFIG_X86
+		/* Init IOVA domain */
+		if (iommu_dma_init_domain(domain, viommu->aperture_start,
+					  viommu->aperture_end, NULL)) {
+			pr_err("%s: init dma domain fail\n", __func__);
+			mutex_unlock(&vdomain->mutex);
+			goto out;
+		}
+#endif
+	} else if (vdomain->viommu != viommu) {
 		dev_err(dev, "cannot attach to foreign VIOMMU\n");
 		ret = -EXDEV;
 	}
@@ -489,6 +513,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	if (ret)
 		return ret;
 
+#ifndef CONFIG_X86
 	/*
 	 * When attaching the device to a new domain, it will be detached from
 	 * the old one and, if as as a result the old domain isn't attached to
@@ -506,9 +531,15 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 		dev_dbg(dev, "detach from domain %llu\n", vdev->vdomain->id);
 		vdev->vdomain->attached--;
 	}
+#endif
 
 	dev_dbg(dev, "attach to domain %llu\n", vdomain->id);
 
+#ifdef CONFIG_X86
+	/* Use direct PCI bdf as device ID for now */
+	req.device = cpu_to_le32(__pci_device_id(dev));
+	ret = viommu_send_req_sync(vdomain->viommu, &req);
+#else
 	for (i = 0; i < fwspec->num_ids; i++) {
 		req.device = cpu_to_le32(fwspec->ids[i]);
 
@@ -516,9 +547,10 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 		if (ret)
 			break;
 	}
+	vdev->vdomain = vdomain;
+#endif
 
 	vdomain->attached++;
-	vdev->vdomain = vdomain;
 
 	return ret;
 }
@@ -730,6 +762,7 @@ static phys_addr_t viommu_iova_to_phys(struct iommu_domain *domain,
 static struct iommu_ops viommu_ops;
 static struct virtio_driver virtio_iommu_drv;
 
+#ifndef CONFIG_X86
 static int viommu_match_node(struct device *dev, void *data)
 {
 	return dev->parent->fwnode == data;
@@ -743,12 +776,17 @@ static struct viommu_dev *viommu_get_by_fwnode(struct fwnode_handle *fwnode)
 
 	return dev ? dev_to_virtio(dev)->priv : NULL;
 }
+#endif
 
 static int viommu_add_device(struct device *dev)
 {
 	struct iommu_group *group;
-	struct viommu_endpoint *vdev;
 	struct viommu_dev *viommu = NULL;
+
+#ifdef CONFIG_X86
+	viommu = viommu_global;
+#else
+	struct viommu_endpoint *vdev;
 	struct iommu_fwspec *fwspec = dev->iommu_fwspec;
 
 	if (!fwspec || fwspec->ops != &viommu_ops)
@@ -764,6 +802,7 @@ static int viommu_add_device(struct device *dev)
 
 	vdev->viommu = viommu;
 	fwspec->iommu_priv = vdev;
+#endif
 
 	/*
 	 * Last step creates a default domain and attaches to it. Everything
@@ -778,7 +817,9 @@ static int viommu_add_device(struct device *dev)
 
 static void viommu_remove_device(struct device *dev)
 {
+#ifndef CONFIG_X86
 	kfree(dev->iommu_fwspec->iommu_priv);
+#endif
 }
 
 static struct iommu_group *
@@ -845,6 +886,105 @@ static struct iommu_ops viommu_ops = {
 	.put_resv_regions	= viommu_put_resv_regions,
 };
 
+#ifdef CONFIG_X86
+static dma_addr_t viommu_dma_map_page(struct device *dev, struct page *page,
+				      unsigned long offset, size_t size,
+				      enum dma_data_direction dir,
+				      unsigned long attrs)
+{
+	return iommu_dma_map_page(dev, page, offset, size,
+				  dma_info_to_prot(dir, 0, attrs));
+}
+
+static int viommu_dma_map_sg(struct device *dev, struct scatterlist *sglist, int nelems,
+			     enum dma_data_direction dir, unsigned long attrs)
+{
+	return iommu_dma_map_sg(dev, sglist, nelems,
+				dma_info_to_prot(dir, 0, attrs));
+}
+
+static void __flush_page(struct device *dev, const void *virt, phys_addr_t phys)
+{
+}
+
+/* Refering to __iommu_alloc_attrs, simplified version */
+static void *viommu_dma_map_alloc(struct device *dev, size_t size,
+				  dma_addr_t *handle, gfp_t gfp,
+				  unsigned long attrs)
+{
+	bool coherent = true;
+	int ioprot = dma_info_to_prot(DMA_BIDIRECTIONAL, coherent, attrs);
+	pgprot_t prot = PAGE_KERNEL;
+	size_t iosize = size;
+	struct page **pages;
+	void *addr;
+
+	if (WARN(!dev, "cannot create IOMMU mapping for unknown device\n"))
+		return NULL;
+
+	size = PAGE_ALIGN(size);
+
+	/*
+	 * Some drivers rely on this, and we probably don't want the
+	 * possibility of stale kernel data being read by devices anyway.
+	 */
+	gfp |= __GFP_ZERO;
+
+	pages = iommu_dma_alloc(dev, iosize, gfp, attrs, ioprot,
+				handle, __flush_page);
+	if (!pages)
+		return NULL;
+
+	addr = dma_common_pages_remap(pages, size, VM_USERMAP, prot,
+				      __builtin_return_address(0));
+	if (!addr)
+		iommu_dma_free(dev, pages, iosize, handle);
+
+	return addr;
+}
+
+/* From __iommu_free_attrs */
+static void viommu_dma_map_free(struct device *dev, size_t size, void *cpu_addr,
+				dma_addr_t handle, unsigned long attrs)
+{
+	size_t iosize = size;
+
+	size = PAGE_ALIGN(size);
+	/*
+	 * @cpu_addr will be one of 4 things depending on how it was allocated:
+	 * - A remapped array of pages for contiguous allocations.
+	 * - A remapped array of pages from iommu_dma_alloc(), for all
+	 *   non-atomic allocations.
+	 * - A non-cacheable alias from the atomic pool, for atomic
+	 *   allocations by non-coherent devices.
+	 * - A normal lowmem address, for atomic allocations by
+	 *   coherent devices.
+	 * Hence how dodgy the below logic looks...
+	 */
+	if (is_vmalloc_addr(cpu_addr)){
+		struct vm_struct *area = find_vm_area(cpu_addr);
+
+		if (WARN_ON(!area || !area->pages))
+			return;
+		iommu_dma_free(dev, area->pages, iosize, &handle);
+		dma_common_free_remap(cpu_addr, size, VM_USERMAP);
+	} else {
+		iommu_dma_unmap_page(dev, handle, iosize, 0, 0);
+		__free_pages(virt_to_page(cpu_addr), get_order(size));
+	}
+}
+
+static struct dma_map_ops viommu_dma_ops = {
+	.alloc = viommu_dma_map_alloc,
+	.free = viommu_dma_map_free,
+	.map_sg = viommu_dma_map_sg,
+	.unmap_sg = iommu_dma_unmap_sg,
+	.map_page = viommu_dma_map_page,
+	.unmap_page = iommu_dma_unmap_page,
+	.mapping_error = iommu_dma_mapping_error,
+};
+#endif
+
 static int viommu_init_vq(struct viommu_dev *viommu)
 {
 	struct virtio_device *vdev = dev_to_virtio(viommu->dev);
@@ -868,6 +1008,12 @@ static int viommu_probe(struct virtio_device *vdev)
 	struct viommu_dev *viommu = NULL;
 	struct device *dev = &vdev->dev;
 	int ret;
+
+#ifdef CONFIG_X86
+	if (viommu_global) {
+		panic("Currently only one virtio-iommu is supported!");
+	}
+#endif
 
 	viommu = kzalloc(sizeof(*viommu), GFP_KERNEL);
 	if (!viommu)
@@ -917,6 +1063,14 @@ static int viommu_probe(struct virtio_device *vdev)
 	iommu_device_set_fwnode(&viommu->iommu, parent_dev->fwnode);
 
 	iommu_device_register(&viommu->iommu);
+
+#ifdef CONFIG_X86
+	dma_ops = &viommu_dma_ops;
+	/* We need this before bus_set_iommu() for below */
+	viommu_global = viommu;
+	/* init iova_cache for further use. */
+	iommu_dma_init();
+#endif
 
 #ifdef CONFIG_PCI
 	if (pci_bus_type.iommu_ops != &viommu_ops) {
