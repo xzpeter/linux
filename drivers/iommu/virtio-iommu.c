@@ -221,6 +221,7 @@ static int _viommu_send_reqs_sync(struct viommu_dev *viommu,
 	 * this, need to do some digging.
 	 */
 	unsigned long timeout_ms = 1000;
+	struct list_head *pos, *n;
 
 	*nr_sent = 0;
 
@@ -272,6 +273,14 @@ static int _viommu_send_reqs_sync(struct viommu_dev *viommu,
 
 	if (nr_received != i)
 		ret = -ETIMEDOUT;
+
+	/*
+	 * If timeout happens, cleanup pending requests. We don't need
+	 * to free them since they are allocated on the stack.
+	 */
+	list_for_each_safe(pos, n, &viommu->pending_requests) {
+		list_del(pos);
+	}
 
 	if (ret == -ENOSPC && nr_received)
 		/*
