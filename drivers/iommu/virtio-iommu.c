@@ -487,10 +487,12 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	struct viommu_dev *viommu = viommu_global;
 #endif
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
-	struct virtio_iommu_req_attach req = {
-		.head.type	= VIRTIO_IOMMU_T_ATTACH,
-		.address_space	= cpu_to_le32(vdomain->id),
-	};
+	struct virtio_iommu_req_attach *req;
+
+	req = kzalloc(sizeof(*req), GFP_ATOMIC);
+
+	req->head.type = VIRTIO_IOMMU_T_ATTACH;
+	req->address_space = cpu_to_le32(vdomain->id);
 
 	mutex_lock(&vdomain->mutex);
 	if (!vdomain->viommu) {
@@ -520,7 +522,7 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	mutex_unlock(&vdomain->mutex);
 
 	if (ret)
-		return ret;
+		goto out;
 
 #ifndef CONFIG_X86
 	/*
@@ -546,13 +548,13 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 #ifdef CONFIG_X86
 	/* Use direct PCI bdf as device ID for now */
-	req.device = cpu_to_le32(__pci_device_id(dev));
-	ret = viommu_send_req_sync(vdomain->viommu, &req);
+	req->device = cpu_to_le32(__pci_device_id(dev));
+	ret = viommu_send_req_sync(vdomain->viommu, req);
 #else
 	for (i = 0; i < fwspec->num_ids; i++) {
-		req.device = cpu_to_le32(fwspec->ids[i]);
+		req->device = cpu_to_le32(fwspec->ids[i]);
 
-		ret = viommu_send_req_sync(vdomain->viommu, &req);
+		ret = viommu_send_req_sync(vdomain->viommu, req);
 		if (ret)
 			break;
 	}
@@ -561,6 +563,8 @@ static int viommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 	vdomain->attached++;
 
+out:
+	kfree(req);
 	return ret;
 }
 
@@ -569,7 +573,11 @@ static int viommu_map(struct iommu_domain *domain, unsigned long iova,
 {
 	int ret;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
-	struct virtio_iommu_req_map req = {
+	struct virtio_iommu_req_map *req;
+
+	req = kzalloc(sizeof(*req), GFP_ATOMIC);
+
+	*req = (struct virtio_iommu_req_map) {
 		.head.type	= VIRTIO_IOMMU_T_MAP,
 		.address_space	= cpu_to_le32(vdomain->id),
 		.virt_addr	= cpu_to_le64(iova),
@@ -580,23 +588,27 @@ static int viommu_map(struct iommu_domain *domain, unsigned long iova,
 	pr_debug("map %llu 0x%lx -> 0x%llx (%zu)\n", vdomain->id, iova,
 		 paddr, size);
 
-	if (!vdomain->attached)
-		return -ENODEV;
+	if (!vdomain->attached) {
+		ret = -ENODEV;
+		goto out;
+	}
 
 	if (prot & IOMMU_READ)
-		req.flags |= cpu_to_le32(VIRTIO_IOMMU_MAP_F_READ);
+		req->flags |= cpu_to_le32(VIRTIO_IOMMU_MAP_F_READ);
 
 	if (prot & IOMMU_WRITE)
-		req.flags |= cpu_to_le32(VIRTIO_IOMMU_MAP_F_WRITE);
+		req->flags |= cpu_to_le32(VIRTIO_IOMMU_MAP_F_WRITE);
 
 	ret = viommu_tlb_map(vdomain, iova, paddr, size);
 	if (ret)
-		return ret;
+		goto out;
 
-	ret = viommu_send_req_sync(vdomain->viommu, &req);
+	ret = viommu_send_req_sync(vdomain->viommu, req);
 	if (ret)
 		viommu_tlb_unmap(vdomain, iova, size);
 
+out:
+	kfree(req);
 	return ret;
 }
 
@@ -606,7 +618,11 @@ static size_t viommu_unmap(struct iommu_domain *domain, unsigned long iova,
 	int ret;
 	size_t unmapped;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
-	struct virtio_iommu_req_unmap req = {
+	struct virtio_iommu_req_unmap *req;
+
+	req = kzalloc(sizeof(*req), GFP_ATOMIC);
+
+	*req = (struct virtio_iommu_req_unmap) {
 		.head.type	= VIRTIO_IOMMU_T_UNMAP,
 		.address_space	= cpu_to_le32(vdomain->id),
 		.virt_addr	= cpu_to_le64(iova),
@@ -615,19 +631,24 @@ static size_t viommu_unmap(struct iommu_domain *domain, unsigned long iova,
 	pr_debug("unmap %llu 0x%lx (%zu)\n", vdomain->id, iova, size);
 
 	/* Callers may unmap after detach, but device already took care of it. */
-	if (!vdomain->attached)
-		return size;
+	if (!vdomain->attached) {
+		unmapped = size;
+		goto out;
+	}
 
 	unmapped = viommu_tlb_unmap(vdomain, iova, size);
-	if (unmapped < size)
-		return 0;
+	if (unmapped < size) {
+		goto out;
+	}
 
-	req.size = cpu_to_le64(unmapped);
+	req->size = cpu_to_le64(unmapped);
 
-	ret = viommu_send_req_sync(vdomain->viommu, &req);
+	ret = viommu_send_req_sync(vdomain->viommu, req);
 	if (ret)
-		return 0;
+		unmapped = 0;
 
+out:
+	kfree(req);
 	return unmapped;
 }
 
@@ -645,13 +666,24 @@ static size_t viommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 	unsigned long mapped_iova;
 	size_t top_size, bottom_size;
 	struct viommu_request reqs[nents];
-	struct virtio_iommu_req_map map_reqs[nents];
+	struct virtio_iommu_req_map *map_reqs;
 	struct viommu_domain *vdomain = to_viommu_domain(domain);
+	size_t reqs_size = sizeof(*map_reqs) * nents;
 
 	if (!vdomain->attached)
 		return 0;
 
 	pr_debug("map_sg %llu %u 0x%lx\n", vdomain->id, nents, iova);
+
+	/*
+	 * NOTE: better malloc rather than use stack buffer since
+	 * stack buffer may not be physically contiguous. E.g.,
+	 * normally the physical address of the buffer should be GPA,
+	 * but if using stack buffer, I'll get something like
+	 * 0x410000197650. Still don't know why. May depend on x86
+	 * stack design.
+	 */
+	map_reqs = kzalloc(reqs_size, GFP_ATOMIC);
 
 	if (prot & IOMMU_READ)
 		flags |= VIRTIO_IOMMU_MAP_F_READ;
@@ -661,7 +693,7 @@ static size_t viommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 
 	min_pagesz = 1 << __ffs(domain->pgsize_bitmap);
 	bottom_size = sizeof(struct virtio_iommu_req_tail);
-	top_size = sizeof(*map_reqs) - bottom_size;
+	top_size = reqs_size - bottom_size;
 
 	cur_iova = iova;
 
@@ -697,8 +729,7 @@ static size_t viommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 	total_size = cur_iova - iova;
 
 	if (ret) {
-		viommu_tlb_unmap(vdomain, iova, total_size);
-		return 0;
+		goto err_unmap;
 	}
 
 	ret = viommu_send_reqs_sync(vdomain->viommu, reqs, i, &nr_sent);
@@ -710,6 +741,8 @@ static size_t viommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 		if (!reqs[i].written || map_reqs[i].tail.status)
 			goto err_rollback;
 	}
+
+	kfree(map_reqs);
 
 	return total_size;
 
@@ -737,8 +770,9 @@ err_rollback:
 		}
 	}
 
+err_unmap:
 	viommu_tlb_unmap(vdomain, iova, total_size);
-
+	kfree(map_reqs);
 	return 0;
 }
 
