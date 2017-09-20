@@ -168,7 +168,8 @@ asmlinkage void do_sparc_fault(struct pt_regs *regs, int text_fault, int write,
 	int from_user = !(regs->psr & PSR_PS);
 	int code;
 	vm_fault_t fault;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE |
+			     FAULT_FLAG_ALLOW_UFFD_RETRY;
 
 	if (text_fault)
 		address = regs->pc;
@@ -271,6 +272,11 @@ good_area:
 
 			goto retry;
 		}
+	}
+	if ((flags & FAULT_FLAG_ALLOW_UFFD_RETRY) &&
+	    (fault & VM_FAULT_UFFD_RETRY)) {
+		flags &= ~FAULT_FLAG_ALLOW_UFFD_RETRY;
+		goto retry;
 	}
 
 	up_read(&mm->mmap_sem);

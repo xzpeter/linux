@@ -71,7 +71,8 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct * vma;
 	vm_fault_t fault;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE |
+			     FAULT_FLAG_ALLOW_UFFD_RETRY;
 
 	pr_debug("do page fault:\nregs->sr=%#x, regs->pc=%#lx, address=%#lx, %ld, %p\n",
 		regs->sr, regs->pc, address, error_code, mm ? mm->pgd : NULL);
@@ -175,6 +176,11 @@ good_area:
 
 			goto retry;
 		}
+	}
+	if ((flags & FAULT_FLAG_ALLOW_UFFD_RETRY) &&
+	    (fault & VM_FAULT_UFFD_RETRY)) {
+		flags &= ~FAULT_FLAG_ALLOW_UFFD_RETRY;
+		goto retry;
 	}
 
 	up_read(&mm->mmap_sem);

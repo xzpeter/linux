@@ -1235,7 +1235,8 @@ void do_user_addr_fault(struct pt_regs *regs,
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	vm_fault_t fault, major = 0;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE |
+	                     FAULT_FLAG_ALLOW_UFFD_RETRY;
 
 	tsk = current;
 	mm = tsk->mm;
@@ -1433,6 +1434,12 @@ good_area:
 		if (flags & FAULT_FLAG_ALLOW_RETRY) {
 			flags &= ~FAULT_FLAG_ALLOW_RETRY;
 			flags |= FAULT_FLAG_TRIED;
+			if (!fatal_signal_pending(tsk))
+				goto retry;
+		}
+		if ((flags & FAULT_FLAG_ALLOW_UFFD_RETRY) &&
+		    (fault & VM_FAULT_UFFD_RETRY)) {
+			flags &= ~FAULT_FLAG_ALLOW_UFFD_RETRY;
 			if (!fatal_signal_pending(tsk))
 				goto retry;
 		}
