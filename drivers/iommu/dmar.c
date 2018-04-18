@@ -1325,6 +1325,9 @@ void qi_flush_iotlb(struct intel_iommu *iommu, u16 did, u64 addr,
 	struct qi_desc desc;
 	int ih = 0;
 
+	pr_debug("%s: iommu %d did %u addr 0x%llx order %u type %llx\n",
+		 __func__, iommu->seq_id, did, addr, size_order, type);
+
 	if (cap_write_drain(iommu->cap))
 		dw = 1;
 

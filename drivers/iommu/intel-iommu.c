@@ -1396,6 +1396,9 @@ static void __iommu_flush_iotlb(struct intel_iommu *iommu, u16 did,
 	u64 val = 0, val_iva = 0;
 	unsigned long flag;
 
+	pr_debug("%s: iommu %d did %u addr 0x%llx order %u type %llx\n",
+		 __func__, iommu->seq_id, did, addr, size_order, type);
+
 	switch (type) {
 	case DMA_TLB_GLOBAL_FLUSH:
 		/* global flush doesn't need set IVA_REG */
