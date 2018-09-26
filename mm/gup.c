@@ -523,12 +523,18 @@ static int faultin_page(struct task_struct *tsk, struct vm_area_struct *vma,
 		fault_flags |= FAULT_FLAG_WRITE;
 	if (*flags & FOLL_REMOTE)
 		fault_flags |= FAULT_FLAG_REMOTE;
-	if (nonblocking)
-		fault_flags |= FAULT_FLAG_ALLOW_RETRY;
+	if (nonblocking) {
+		if (*flags & FOLL_UFFD_RETRY)
+			fault_flags |= FAULT_FLAG_ALLOW_UFFD_RETRY;
+		else
+			fault_flags |= FAULT_FLAG_ALLOW_RETRY |
+			    FAULT_FLAG_ALLOW_UFFD_RETRY;
+	}
 	if (*flags & FOLL_NOWAIT)
 		fault_flags |= FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_RETRY_NOWAIT;
 	if (*flags & FOLL_TRIED) {
 		VM_WARN_ON_ONCE(fault_flags & FAULT_FLAG_ALLOW_RETRY);
+		VM_WARN_ON_ONCE(fault_flags & FAULT_FLAG_ALLOW_UFFD_RETRY);
 		fault_flags |= FAULT_FLAG_TRIED;
 	}
 
@@ -548,7 +554,7 @@ static int faultin_page(struct task_struct *tsk, struct vm_area_struct *vma,
 			tsk->min_flt++;
 	}
 
-	if (ret & VM_FAULT_RETRY) {
+	if (ret & VM_FAULT_RETRY || ret & VM_FAULT_UFFD_RETRY) {
 		if (nonblocking && !(fault_flags & FAULT_FLAG_RETRY_NOWAIT))
 			*nonblocking = 0;
 		return -EBUSY;
@@ -847,7 +853,8 @@ int fixup_user_fault(struct task_struct *tsk, struct mm_struct *mm,
 	vm_fault_t ret, major = 0;
 
 	if (unlocked)
-		fault_flags |= FAULT_FLAG_ALLOW_RETRY;
+		fault_flags |= FAULT_FLAG_ALLOW_RETRY |
+		    FAULT_FLAG_ALLOW_UFFD_RETRY;
 
 retry:
 	vma = find_extend_vma(mm, address);
@@ -875,6 +882,11 @@ retry:
 			fault_flags |= FAULT_FLAG_TRIED;
 			goto retry;
 		}
+	} else if (ret & VM_FAULT_UFFD_RETRY) {
+		*unlocked = true;
+		down_read(&mm->mmap_sem);
+		fault_flags &= ~FAULT_FLAG_ALLOW_UFFD_RETRY;
+		goto retry;
 	}
 
 	if (tsk) {
@@ -912,6 +924,10 @@ static __always_inline long __get_user_pages_locked(struct task_struct *tsk,
 	pages_done = 0;
 	lock_dropped = false;
 	for (;;) {
+		int retries = 0;
+		unsigned int tmp_flags;
+		int *tmp_locked;
+
 		ret = __get_user_pages(tsk, mm, start, nr_pages, flags, pages,
 				       vmas, locked);
 		if (!locked)
@@ -955,14 +971,35 @@ static __always_inline long __get_user_pages_locked(struct task_struct *tsk,
 		*locked = 1;
 		lock_dropped = true;
 		down_read(&mm->mmap_sem);
-		ret = __get_user_pages(tsk, mm, start, 1, flags | FOLL_TRIED,
-				       pages, NULL, NULL);
-		if (ret != 1) {
-			BUG_ON(ret > 1);
+
+		/* For the 2nd attempt we still allow to retry */
+		tmp_flags = flags | FOLL_UFFD_RETRY;
+		tmp_locked = locked;
+retry_one:
+		retries++;
+		ret = __get_user_pages(tsk, mm, start, 1, tmp_flags,
+				       pages, NULL, tmp_locked);
+		if (ret < 0) {
+			/*
+			 * Failure happened no matter whether in the
+			 * 2nd or 3rd retry; stop
+			 */
 			if (!pages_done)
 				pages_done = ret;
 			break;
+		} else if (ret == 0) {
+			if (retries >= 2)
+				/* We tried a page for 3 times; stop */
+				break;
+
+			BUG_ON(tmp_locked != locked);
+			BUG_ON(tmp_flags != (flags | FOLL_UFFD_RETRY));
+			/* For the 3rd attempt, we don't allow retries */
+			tmp_locked = NULL;
+			tmp_flags = flags | FOLL_TRIED;
+			goto retry_one;
 		}
+		BUG_ON(ret != 1);
 		nr_pages--;
 		pages_done++;
 		if (!nr_pages)
