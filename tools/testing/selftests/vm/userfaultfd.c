@@ -78,6 +78,8 @@ static int test_type;
 #define ALARM_INTERVAL_SECS 10
 static volatile bool test_uffdio_copy_eexist = true;
 static volatile bool test_uffdio_zeropage_eexist = true;
+/* Whether to test uffd write-protection */
+static bool test_uffdio_wp = false;
 
 static bool map_shared;
 static int huge_fd;
@@ -247,19 +249,15 @@ struct uffd_test_ops {
 	void (*alias_mapping)(__u64 *start, size_t len, unsigned long offset);
 };
 
-#define ANON_EXPECTED_IOCTLS		((1 << _UFFDIO_WAKE) | \
-					 (1 << _UFFDIO_COPY) | \
-					 (1 << _UFFDIO_ZEROPAGE))
-
 static struct uffd_test_ops anon_uffd_test_ops = {
-	.expected_ioctls = ANON_EXPECTED_IOCTLS,
+	.expected_ioctls = UFFD_API_RANGE_IOCTLS,
 	.allocate_area	= anon_allocate_area,
 	.release_pages	= anon_release_pages,
 	.alias_mapping = noop_alias_mapping,
 };
 
 static struct uffd_test_ops shmem_uffd_test_ops = {
-	.expected_ioctls = ANON_EXPECTED_IOCTLS,
+	.expected_ioctls = UFFD_API_RANGE_IOCTLS,
 	.allocate_area	= shmem_allocate_area,
 	.release_pages	= shmem_release_pages,
 	.alias_mapping = noop_alias_mapping,
@@ -421,7 +419,10 @@ static int __copy_page(int ufd, unsigned long offset, bool retry)
 	uffdio_copy.dst = (unsigned long) area_dst + offset;
 	uffdio_copy.src = (unsigned long) area_src + offset;
 	uffdio_copy.len = page_size;
-	uffdio_copy.mode = 0;
+	if (test_uffdio_wp)
+		uffdio_copy.mode = UFFDIO_COPY_MODE_WP;
+	else
+		uffdio_copy.mode = 0;
 	uffdio_copy.copy = 0;
 	if (ioctl(ufd, UFFDIO_COPY, &uffdio_copy)) {
 		/* real retval in ufdio_copy.copy */
@@ -473,19 +474,36 @@ static int uffd_read_msg(int ufd, struct uffd_msg *msg)
 static int uffd_handle_page_fault(struct uffd_msg *msg)
 {
 	unsigned long offset;
+	struct uffdio_writeprotect wp = { 0 };
 
 	if (msg->event != UFFD_EVENT_PAGEFAULT)
 		fprintf(stderr, "unexpected msg event %u\n",
 			msg->event), exit(1);
 
-	if (bounces & BOUNCE_VERIFY &&
-	    msg->arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE)
-		fprintf(stderr, "unexpected write fault\n"), exit(1);
+	if (msg->arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP) {
+		/* Write protection page faults */
+		wp.range.start = msg->arg.pagefault.address;
+		wp.range.len = page_size;
+		/* Undo write-protect, do wakeup after that */
+		wp.mode = 0;
 
-	offset = (char *)(unsigned long)msg->arg.pagefault.address - area_dst;
-	offset &= ~(page_size-1);
+		if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp))
+			fprintf(stderr, "clear WP failed for address 0x%llx\n",
+				msg->arg.pagefault.address), exit(1);
 
-	return copy_page(uffd, offset);
+		/* Write protection page fault does not count */
+		return 0;
+	} else {
+		/* Missing page faults */
+		if (bounces & BOUNCE_VERIFY &&
+		    msg->arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WRITE)
+			fprintf(stderr, "unexpected write fault\n"), exit(1);
+
+		offset = (char *)(unsigned long)msg->arg.pagefault.address - area_dst;
+		offset &= ~(page_size-1);
+
+		return copy_page(uffd, offset);
+	}
 }
 
 static void *uffd_poll_thread(void *arg)
@@ -572,11 +590,38 @@ static void *uffd_read_thread(void *arg)
 static void *background_thread(void *arg)
 {
 	unsigned long cpu = (unsigned long) arg;
-	unsigned long page_nr;
+	unsigned long page_nr, start_nr, mid_nr, end_nr;
+	struct uffdio_writeprotect wp;
 
-	for (page_nr = cpu * nr_pages_per_cpu;
-	     page_nr < (cpu+1) * nr_pages_per_cpu;
-	     page_nr++)
+	start_nr = cpu * nr_pages_per_cpu;
+	end_nr = (cpu+1) * nr_pages_per_cpu;
+	mid_nr = (start_nr + end_nr) / 2;
+
+	/* Copy the first half of the pages */
+	for (page_nr = start_nr; page_nr < mid_nr; page_nr++)
+		copy_page_retry(uffd, page_nr * page_size);
+
+	/*
+	 * If we need to test uffd-wp, set it up now.  Then we'll have
+	 * at least the first half of the pages mapped already which
+	 * can be write-protected for testing
+	 */
+	if (test_uffdio_wp) {
+		wp.range.start = (unsigned long) area_dst +
+		    start_nr * page_size;
+		wp.range.len = nr_pages_per_cpu * page_size;
+		wp.mode = UFFDIO_WRITEPROTECT_MODE_WP;
+		if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp)) {
+			fprintf(stderr, "failed to write-protect\n");
+			return (void *)-1;
+		}
+	}
+
+	/*
+	 * Continue the 2nd half of the page copying, handling write
+	 * protection faults if any
+	 */
+	for (page_nr = mid_nr; page_nr < end_nr; page_nr++)
 		copy_page_retry(uffd, page_nr * page_size);
 
 	return NULL;
@@ -1041,6 +1086,7 @@ static int userfaultfd_stress(void)
 	unsigned long cpu;
 	int err;
 	unsigned long userfaults[nr_cpus];
+	struct uffdio_writeprotect wp;
 
 	uffd_test_ops->allocate_area((void **)&area_src);
 	if (!area_src)
@@ -1121,6 +1167,8 @@ static int userfaultfd_stress(void)
 		uffdio_register.range.start = (unsigned long) area_dst;
 		uffdio_register.range.len = nr_pages * page_size;
 		uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING;
+		if (test_uffdio_wp)
+			uffdio_register.mode |= UFFDIO_REGISTER_MODE_WP;
 		if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register)) {
 			fprintf(stderr, "register failure\n");
 			return 1;
@@ -1173,6 +1221,17 @@ static int userfaultfd_stress(void)
 		if (stress(userfaults))
 			return 1;
 
+		if (test_uffdio_wp) {
+			wp.range.start = (unsigned long) area_dst;
+			wp.range.len = nr_pages * page_size;
+			/* Clear write-protections for all */
+			wp.mode = 0;
+			if (ioctl(uffd, UFFDIO_WRITEPROTECT, &wp)) {
+				fprintf(stderr, "failed to write-protect\n");
+				return 1;
+			}
+		}
+
 		/* unregister */
 		if (ioctl(uffd, UFFDIO_UNREGISTER, &uffdio_register.range)) {
 			fprintf(stderr, "unregister failure\n");
@@ -1221,6 +1280,13 @@ static int userfaultfd_stress(void)
 		return err;
 
 	close(uffd);
+
+	/*
+	 * Reset the test_uffdio_wp flag since we don't test WP in all
+	 * the rest of the tests
+	 */
+	test_uffdio_wp = false;
+
 	return userfaultfd_zeropage_test() || userfaultfd_sig_test()
 		|| userfaultfd_events_test();
 }
@@ -1254,6 +1320,8 @@ static void set_test_type(const char *type)
 	if (!strcmp(type, "anon")) {
 		test_type = TEST_ANON;
 		uffd_test_ops = &anon_uffd_test_ops;
+		/* Only enable write-protect test for anonymous test */
+		test_uffdio_wp = true;
 	} else if (!strcmp(type, "hugetlb")) {
 		test_type = TEST_HUGETLB;
 		uffd_test_ops = &hugetlb_uffd_test_ops;
