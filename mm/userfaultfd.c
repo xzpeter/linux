@@ -644,7 +644,7 @@ int mwriteprotect_range(struct mm_struct *dst_mm, unsigned long start,
 		newprot = vm_get_page_prot(dst_vma->vm_flags);
 
 	change_protection(dst_vma, start, start + len, newprot,
-				!enable_wp, 0);
+			  enable_wp ? 0 : MM_CP_DIRTY_ACCT);
 
 	err = 0;
 out_unlock:
