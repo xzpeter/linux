@@ -146,6 +146,8 @@ static unsigned long change_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 						continue;
 					else if (WARN_ON(ret != VM_FAULT_WRITE))
 						return pages;
+					pr_info("%s: COW for addr 0x%lx\n",
+						__func__, addr);
 					pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 					arch_enter_lazy_mmu_mode();
 				}
@@ -159,10 +161,14 @@ static unsigned long change_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 			if (uffd_wp) {
 				ptent = pte_wrprotect(ptent);
 				ptent = pte_mkuffd_wp(ptent);
+				pr_info("%s: WRITE-PROTECT addr 0x%lx: entry=0x%lx\n",
+					__func__, addr, pte_val(ptent));
 			} else if (uffd_wp_resolve) {
 				WARN_ON(!pte_uffd_wp(ptent));
 				ptent = pte_mkwrite(ptent);
 				ptent = pte_clear_uffd_wp(ptent);
+				pr_info("%s: RESOLVE-WP addr 0x%lx: entry=0x%lx\n",
+					__func__, addr, pte_val(ptent));
 			}
 
 			/* Avoid taking write faults for known dirty pages */
