@@ -440,8 +440,9 @@ vm_fault_t handle_userfault(struct vm_fault *vmf, unsigned long reason)
 #ifdef CONFIG_DEBUG_VM
 		if (printk_ratelimit()) {
 			printk(KERN_WARNING
-			       "FAULT_FLAG_ALLOW_RETRY missing %x\n",
-			       vmf->flags);
+			       "FAULT_FLAG_ALLOW_RETRY missing %x "
+			       "address 0x%lx\n", vmf->flags,
+			       vmf->address);
 			dump_stack();
 		}
 #endif
