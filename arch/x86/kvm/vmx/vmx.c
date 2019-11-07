@@ -7710,6 +7710,7 @@ static __init int hardware_setup(void)
 		kvm_x86_ops->slot_disable_log_dirty = NULL;
 		kvm_x86_ops->flush_log_dirty = NULL;
 		kvm_x86_ops->enable_log_dirty_pt_masked = NULL;
+		kvm_x86_ops->cpu_dirty_log_size = NULL;
 	}
 
 	if (!cpu_has_vmx_preemption_timer())
@@ -7772,6 +7773,11 @@ static __exit void hardware_unsetup(void)
 		nested_vmx_hardware_unsetup();
 
 	free_kvm_area();
+}
+
+static int vmx_cpu_dirty_log_size(void)
+{
+	return enable_pml ? PML_ENTITY_NUM : 0;
 }
 
 static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
@@ -7896,6 +7902,7 @@ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.flush_log_dirty = vmx_flush_log_dirty,
 	.enable_log_dirty_pt_masked = vmx_enable_log_dirty_pt_masked,
 	.write_log_dirty = vmx_write_pml_buffer,
+	.cpu_dirty_log_size = vmx_cpu_dirty_log_size,
 
 	.pre_block = vmx_pre_block,
 	.post_block = vmx_post_block,
