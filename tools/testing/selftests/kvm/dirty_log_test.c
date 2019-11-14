@@ -12,8 +12,10 @@
 #include <unistd.h>
 #include <time.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
+#include <asm/barrier.h>
 
 #include "test_util.h"
 #include "kvm_util.h"
@@ -56,6 +58,8 @@
 # define test_and_set_bit_le	test_and_set_bit
 # define test_and_clear_bit_le	test_and_clear_bit
 #endif
+
+#define TEST_DIRTY_RING_COUNT		1024
 
 /*
  * Guest/Host shared variables. Ensure addr_gva2hva() and/or
@@ -128,12 +132,19 @@ static uint64_t host_dirty_count;
 static uint64_t host_clear_count;
 static uint64_t host_track_next_count;
 
+/* Whether dirty ring reset is requested, or finished */
+static sem_t dirty_ring_vcpu_stop;
+static sem_t dirty_ring_vcpu_cont;
+
 enum log_mode_t {
 	/* Only use KVM_GET_DIRTY_LOG for logging */
 	LOG_MODE_DIRTY_LOG = 0,
 
 	/* Use both KVM_[GET|CLEAR]_DIRTY_LOG for logging */
 	LOG_MODE_CLERA_LOG = 1,
+
+	/* Use dirty ring for logging */
+	LOG_MODE_DIRTY_RING = 2,
 
 	LOG_MODE_NUM,
 };
@@ -177,6 +188,114 @@ static void default_after_vcpu_run(struct kvm_vm *vm)
 		    exit_reason_str(run->exit_reason));
 }
 
+static void dirty_ring_create_vm_done(struct kvm_vm *vm)
+{
+	/*
+	 * Switch to dirty ring mode after VM creation but before any
+	 * of the vcpu creation.
+	 */
+	vm_enable_dirty_ring(vm, TEST_DIRTY_RING_COUNT *
+			     sizeof(struct kvm_dirty_gfn));
+}
+
+static void dirty_ring_collect_dirty_pages(struct kvm_vm *vm, int slot,
+					   void *bitmap, uint32_t num_pages)
+{
+	/* We only have one vcpu */
+	struct kvm_dirty_gfn *dirty_gfns, *cur;
+	struct kvm_run *state = vcpu_state(vm, VCPU_ID);
+	uint32_t avail, fetch, count = 0, ret;
+	static uint32_t last_fetch;
+
+	/*
+	 * Before fetching the dirty pages, we need a vmexit of the
+	 * worker vcpu to make sure the hardware dirty buffers were
+	 * flushed.  This is not needed for dirty-log/clear-log tests
+	 * because get dirty log will natually do so.
+	 *
+	 * For now we do it in the simple way - we simply wait until
+	 * the vcpu uses up the soft dirty ring, then it'll always
+	 * do a vmexit to make sure that PML buffers will be flushed.
+	 * In real hypervisors, we probably need a vcpu kick or to
+	 * stop the vcpus (before the final sync) to make sure we'll
+	 * get all the existing dirty PFNs even cached in hardware.
+	 */
+	sem_wait(&dirty_ring_vcpu_stop);
+
+	dirty_gfns = vcpu_map_dirty_ring(vm, VCPU_ID);
+
+	/*
+	 * This is not needed by a real hypervisor, but here we also
+	 * read the fetch index to verify that it was the same as it
+	 * was last written by us
+	 */
+	fetch = READ_ONCE(state->dirty_ring_indexes.fetch_index);
+	TEST_ASSERT(fetch == last_fetch, "fetch_index has changed by kernel!");
+
+	avail = READ_ONCE(state->dirty_ring_indexes.avail_index);
+	TEST_ASSERT(avail < TEST_DIRTY_RING_COUNT, "avail_index overflowed: "
+		    "%u >= %u", avail, TEST_DIRTY_RING_COUNT);
+
+	DEBUG("%s: fetch: 0x%x, avail: 0x%x\n", __func__, fetch, avail);
+
+	/* Make sure we read valid entries always */
+	rmb();
+
+	while (fetch != avail) {
+		cur = &dirty_gfns[fetch];
+		TEST_ASSERT(cur->pad == 0, "Padding is non-zero: 0x%x", cur->pad);
+		TEST_ASSERT(cur->slot == slot, "Slot number didn't match: "
+			    "%u != %u", cur->slot, slot);
+		TEST_ASSERT(cur->offset < num_pages, "Offset overflow: "
+			    "0x%llx >= 0x%llx", cur->offset, num_pages);
+		test_and_set_bit(cur->offset, bitmap);
+		count++;
+		if (++fetch == TEST_DIRTY_RING_COUNT) {
+			fetch = 0;
+		}
+	}
+
+	DEBUG("Fetched %u new dirty pages\n", count);
+
+	last_fetch = fetch;
+	WRITE_ONCE(state->dirty_ring_indexes.fetch_index, last_fetch);
+
+	ret = kvm_vm_reset_dirty_ring(vm);
+
+	/* Cleared pages should be the same as collected */
+	TEST_ASSERT(ret == count, "Reset dirty pages (%u) mismatch with "
+		    "collected (%u)", ret, count);
+
+	DEBUG("Notifying vcpu to continue\n");
+	sem_post(&dirty_ring_vcpu_cont);
+}
+
+static void dirty_ring_after_vcpu_run(struct kvm_vm *vm)
+{
+	struct kvm_run *run = vcpu_state(vm, VCPU_ID);
+
+	/* A ucall-sync or ring-full event is allowed */
+	if (get_ucall(vm, VCPU_ID, NULL) == UCALL_SYNC) {
+		/* We should allow this to continue */
+		;
+	} else if (run->exit_reason == KVM_EXIT_DIRTY_RING_FULL) {
+		sem_post(&dirty_ring_vcpu_stop);
+		DEBUG("vcpu stops because dirty ring full...\n");
+		sem_wait(&dirty_ring_vcpu_cont);
+		DEBUG("vcpu continues now.\n");
+	} else {
+		TEST_ASSERT(false, "Invalid guest sync status: "
+			    "exit_reason=%s\n",
+			    exit_reason_str(run->exit_reason));
+	}
+}
+
+static void dirty_ring_before_vcpu_join(void)
+{
+	/* Kick another round of vcpu just to make sure it will quit */
+	sem_post(&dirty_ring_vcpu_cont);
+}
+
 struct log_mode {
 	const char *name;
 	/* Hook when the vm creation is done (before vcpu creation) */
@@ -186,6 +305,7 @@ struct log_mode {
 				     void *bitmap, uint32_t num_pages);
 	/* Hook to call when after each vcpu run */
 	void (*after_vcpu_run)(struct kvm_vm *vm);
+	void (*before_vcpu_join) (void);
 } log_modes[LOG_MODE_NUM] = {
 	{
 		.name = "dirty-log",
@@ -198,6 +318,13 @@ struct log_mode {
 		.create_vm_done = clear_log_create_vm_done,
 		.collect_dirty_pages = clear_log_collect_dirty_pages,
 		.after_vcpu_run = default_after_vcpu_run,
+	},
+	{
+		.name = "dirty-ring",
+		.create_vm_done = dirty_ring_create_vm_done,
+		.collect_dirty_pages = dirty_ring_collect_dirty_pages,
+		.before_vcpu_join = dirty_ring_before_vcpu_join,
+		.after_vcpu_run = dirty_ring_after_vcpu_run,
 	},
 };
 
@@ -243,6 +370,14 @@ static void log_mode_after_vcpu_run(struct kvm_vm *vm)
 
 	if (mode->after_vcpu_run)
 		mode->after_vcpu_run(vm);
+}
+
+static void log_mode_before_vcpu_join(void)
+{
+	struct log_mode *mode = &log_modes[host_log_mode];
+
+	if (mode->before_vcpu_join)
+		mode->before_vcpu_join();
 }
 
 static void generate_random_array(uint64_t *guest_array, uint64_t size)
@@ -460,6 +595,7 @@ static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 
 	/* Tell the vcpu thread to quit */
 	host_quit = true;
+	log_mode_before_vcpu_join();
 	pthread_join(vcpu_thread, NULL);
 
 	DEBUG("Total bits checked: dirty (%"PRIu64"), clear (%"PRIu64"), "
@@ -523,6 +659,9 @@ int main(int argc, char *argv[])
 #ifdef __aarch64__
 	unsigned int host_ipa_limit;
 #endif
+
+	sem_init(&dirty_ring_vcpu_stop, 0, 0);
+	sem_init(&dirty_ring_vcpu_cont, 0, 0);
 
 #ifdef __x86_64__
 	vm_guest_mode_params_init(VM_MODE_PXXV48_4K, true, true);
