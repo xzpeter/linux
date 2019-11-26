@@ -231,6 +231,7 @@ Based on their initialization different VMs may have different capabilities.
 It is thus encouraged to use the vm ioctl to query for capabilities (available
 with KVM_CAP_CHECK_EXTENSION_VM on the vm fd)
 
+
 4.5 KVM_GET_VCPU_MMAP_SIZE
 
 Capability: basic
@@ -242,6 +243,18 @@ Returns: size of vcpu mmap area, in bytes
 The KVM_RUN ioctl (cf.) communicates with userspace via a shared
 memory region.  This ioctl returns the size of that region.  See the
 KVM_RUN documentation for details.
+
+Besides the size of the KVM_RUN communication region, other areas of
+the VCPU file descriptor can be mmap-ed, including:
+
+- if KVM_CAP_COALESCED_MMIO is available, a page at
+  KVM_COALESCED_MMIO_PAGE_OFFSET * PAGE_SIZE; for historical reasons,
+  this page is included in the result of KVM_GET_VCPU_MMAP_SIZE.
+  KVM_CAP_COALESCED_MMIO is not documented yet.
+
+- if KVM_CAP_DIRTY_LOG_RING is available, a number of pages at
+  KVM_DIRTY_LOG_PAGE_OFFSET * PAGE_SIZE.  For more information on
+  KVM_CAP_DIRTY_LOG_RING, see section 8.3.
 
 
 4.6 KVM_SET_MEMORY_REGION
@@ -5358,6 +5371,7 @@ CPU when the exception is taken. If this virtual SError is taken to EL1 using
 AArch64, this value will be reported in the ISS field of ESR_ELx.
 
 See KVM_CAP_VCPU_EVENTS for more details.
+
 8.20 KVM_CAP_HYPERV_SEND_IPI
 
 Architectures: x86
@@ -5365,6 +5379,7 @@ Architectures: x86
 This capability indicates that KVM supports paravirtualized Hyper-V IPI send
 hypercalls:
 HvCallSendSyntheticClusterIpi, HvCallSendSyntheticClusterIpiEx.
+
 8.21 KVM_CAP_HYPERV_DIRECT_TLBFLUSH
 
 Architecture: x86
@@ -5378,3 +5393,81 @@ handling by KVM (as some KVM hypercall may be mistakenly treated as TLB
 flush hypercalls by Hyper-V) so userspace should disable KVM identification
 in CPUID and only exposes Hyper-V identification. In this case, guest
 thinks it's running on Hyper-V and only use Hyper-V hypercalls.
+
+8.22 KVM_CAP_DIRTY_LOG_RING
+
+Architectures: x86
+Parameters: args[0] - size of the dirty log ring
+
+KVM is capable of tracking dirty memory using ring buffers that are
+mmaped into userspace; there is one dirty ring per vcpu and one global ring.
+
+The dirty ring has the following structure.
+
+struct kvm_dirty_gfn {
+        __u32 pad;
+        __u32 slot; /* as_id | slot_id */
+        __u64 offset;
+};
+
+struct kvm_dirty_ring {
+       union {
+               struct {
+                       __u16 avail_index; /* set by kernel */
+                       __u16 fetch_index; /* set by userspace */
+               } indices;
+               struct kvm_dirty_gfn dirty_gfns[0];
+       };
+};
+
+The two indices in the ring buffer are free running counters.
+They are _not_ limited to the range 0..size-1 where "size" is
+the number of element of the ring buffer.  This makes it easy
+to compute the number of entries in the ring buffer, which is
+simply (u16)(ring->avail_index - ring->fetch_index).
+
+In pseudocode, processing the ring buffer looks like this:
+
+	idx = load-acquire(&ring->fetch_index);
+	while (idx != ring->avail_index) {
+		struct kvm_dirty_gfn *entry;
+		entry = &ring->dirty_gfns[idx & (size - 1)];
+		...
+
+		idx++;
+	}
+	ring->fetch_index = idx;
+
+Userspace calls KVM_ENABLE_CAP ioctl right after KVM_CREATE_VM ioctl
+to enable this capability for the new guest and set the size of the
+rings. The size of the ring must be a power of two.  The larger the
+ring buffer, the less likely the ring is full and the VM is forced to
+exit to userspace. The optimal size depends on the workload, but it is
+recommended that it be at least 64 KiB (4096 entries).
+
+After the capability is enabled, userspace mmaps the global ring
+buffer from the VM file descriptor.  The per-vcpu dirty ring instead
+is mmapped when the vcpu is created, similar to the kvm_run struct.
+The per-vcpu dirty ring is located at offset KVM_DIRTY_LOG_PAGE_OFFSET *
+PAGE_SIZE of the memory mapped region.
+
+Just like for dirty page bitmaps, the buffer tracks writes to
+all user memory regions for which the KVM_MEM_LOG_DIRTY_PAGES flag was
+set in KVM_SET_USER_MEMORY_REGION.  Once a memory region is registered
+with the flag set, userspace can start harvesting dirty pages from the
+ring buffer.
+
+To harvest the dirty pages, userspace accesses the mmaped ring buffer
+to read the dirty GFNs up to avail_index, and sets the fetch_index
+accordingly.  This can be done when the guest is running or paused,
+and dirty pages need not be collected all at once.  After processing
+one or more entries in the ring buffer, userspace calls the VM ioctl
+KVM_RESET_DIRTY_RINGS to notify the kernel that it has updated
+fetch_index and to mark those pages clean.  Therefore, the ioctl
+must be called *before* reading the content of the dirty pages.
+
+If one of the ring buffers is full, the guest will exit to userspace
+with the exit reason set to KVM_EXIT_DIRTY_LOG_FULL, and the
+KVM_RUN ioctl will return -EINTR. Once that happens, userspace
+should pause all the vcpus, then harvest all the dirty pages and
+rearm the dirty traps. It can unpause the guest after that.

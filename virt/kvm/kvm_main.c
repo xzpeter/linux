@@ -64,6 +64,8 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/kvm.h>
 
+#include <linux/kvm_dirty_ring.h>
+
 /* Worst case buffer size needed for holding an integer. */
 #define ITOA_MAX_LEN 12
 
@@ -148,6 +150,10 @@ static void kvm_io_bus_destroy(struct kvm_io_bus *bus);
 static void mark_page_dirty_in_slot(struct kvm *kvm,
 				    struct kvm_vcpu *vcpu,
 				    struct kvm_memory_slot *memslot,
+				    gfn_t gfn);
+static void mark_page_dirty_in_ring(struct kvm *kvm,
+				    struct kvm_vcpu *vcpu,
+				    struct kvm_memory_slot *slot,
 				    gfn_t gfn);
 
 __visible bool kvm_rebooting;
@@ -359,11 +365,22 @@ int kvm_vcpu_init(struct kvm_vcpu *vcpu, struct kvm *kvm, unsigned id)
 	vcpu->preempted = false;
 	vcpu->ready = false;
 
+	if (kvm->dirty_ring_size) {
+		r = kvm_dirty_ring_alloc(vcpu);
+		if (r) {
+			kvm->dirty_ring_size = 0;
+			goto fail_free_run;
+		}
+	}
+
 	r = kvm_arch_vcpu_init(vcpu);
 	if (r < 0)
-		goto fail_free_run;
+		goto fail_free_ring;
 	return 0;
 
+fail_free_ring:
+	if (kvm->dirty_ring_size)
+		kvm_dirty_ring_free(vcpu);
 fail_free_run:
 	free_page((unsigned long)vcpu->run);
 fail:
@@ -381,6 +398,8 @@ void kvm_vcpu_uninit(struct kvm_vcpu *vcpu)
 	put_pid(rcu_dereference_protected(vcpu->pid, 1));
 	kvm_arch_vcpu_uninit(vcpu);
 	free_page((unsigned long)vcpu->run);
+	if (vcpu->kvm->dirty_ring_size)
+		kvm_dirty_ring_free(vcpu);
 }
 EXPORT_SYMBOL_GPL(kvm_vcpu_uninit);
 
@@ -2301,7 +2320,7 @@ static void mark_page_dirty_in_slot(struct kvm *kvm,
 {
 	if (memslot && memslot->dirty_bitmap) {
 		unsigned long rel_gfn = gfn - memslot->base_gfn;
-
+		mark_page_dirty_in_ring(kvm, vcpu, memslot, gfn);
 		set_bit_le(rel_gfn, memslot->dirty_bitmap);
 	}
 }
@@ -2664,6 +2683,11 @@ static vm_fault_t kvm_vcpu_fault(struct vm_fault *vmf)
 	else if (vmf->pgoff == KVM_COALESCED_MMIO_PAGE_OFFSET)
 		page = virt_to_page(vcpu->kvm->coalesced_mmio_ring);
 #endif
+	else if ((vmf->pgoff >= KVM_DIRTY_LOG_PAGE_OFFSET) &&
+		 (vmf->pgoff < KVM_DIRTY_LOG_PAGE_OFFSET +
+		  vcpu->kvm->dirty_ring_size / PAGE_SIZE))
+		page = kvm_dirty_ring_get_page(
+		    vcpu, vmf->pgoff - KVM_DIRTY_LOG_PAGE_OFFSET);
 	else
 		return kvm_arch_vcpu_fault(vcpu, vmf);
 	get_page(page);
@@ -3259,10 +3283,132 @@ static long kvm_vm_ioctl_check_extension_generic(struct kvm *kvm, long arg)
 #endif
 	case KVM_CAP_NR_MEMSLOTS:
 		return KVM_USER_MEM_SLOTS;
+	case KVM_CAP_DIRTY_LOG_RING:
+		/* Version will be zero if arch didn't implement it */
+		return KVM_DIRTY_RING_VERSION;
 	default:
 		break;
 	}
 	return kvm_vm_ioctl_check_extension(kvm, arg);
+}
+
+static void mark_page_dirty_in_ring(struct kvm *kvm,
+				    struct kvm_vcpu *vcpu,
+				    struct kvm_memory_slot *slot,
+				    gfn_t gfn)
+{
+	u32 as_id = 0;
+	u64 offset;
+	int ret;
+
+	if (!kvm->dirty_ring_size)
+		return;
+
+	offset = gfn - slot->base_gfn;
+
+	if (vcpu) {
+		as_id = kvm_arch_vcpu_memslots_id(vcpu);
+	} else {
+		as_id = 0;
+		vcpu = kvm_get_running_vcpu();
+	}
+
+	if (!vcpu) {
+		/*
+		 * TODO: make this look prettier, or even find a
+		 * better vcpu candidate with some reasonable judgement.
+		 */
+		vcpu = kvm->vcpus[0];
+		BUG_ON(vcpu == NULL);
+	}
+
+	ret = kvm_dirty_ring_push(vcpu, (as_id << 16)|slot->id, offset);
+	if (ret < 0) {
+		WARN_ONCE(1, "vcpu %d dirty log overflow\n", vcpu->vcpu_id);
+		return;
+	}
+
+	if (ret)
+		kvm_make_request(KVM_REQ_DIRTY_RING_FULL, vcpu);
+}
+
+void kvm_reset_dirty_gfn(struct kvm *kvm, u32 slot, u64 offset, u64 mask)
+{
+	struct kvm_memory_slot *memslot;
+	int as_id, id;
+
+	as_id = slot >> 16;
+	id = (u16)slot;
+	if (as_id >= KVM_ADDRESS_SPACE_NUM || id >= KVM_USER_MEM_SLOTS)
+		return;
+
+	memslot = id_to_memslot(__kvm_memslots(kvm, as_id), id);
+	if (offset >= memslot->npages)
+		return;
+
+	spin_lock(&kvm->mmu_lock);
+	/* FIXME: we should use a single AND operation, but there is no
+	 * applicable atomic API.
+	 */
+	while (mask) {
+		clear_bit_le(offset + __ffs(mask), memslot->dirty_bitmap);
+		mask &= mask - 1;
+	}
+
+	kvm_arch_mmu_enable_log_dirty_pt_masked(kvm, memslot, offset, mask);
+	spin_unlock(&kvm->mmu_lock);
+}
+
+static int kvm_vm_ioctl_enable_dirty_log_ring(struct kvm *kvm, u32 size)
+{
+	int r;
+
+	/* the size should be power of 2 */
+	if (!size || (size & (size - 1)))
+		return -EINVAL;
+
+	if (size < kvm_dirty_ring_get_rsvd_entries() *
+	    sizeof(struct kvm_dirty_gfn))
+		return -EINVAL;
+
+	if (size > KVM_DIRTY_RING_MAX_ENTRIES *
+	    sizeof(struct kvm_dirty_gfn))
+		return -E2BIG;
+
+	mutex_lock(&kvm->lock);
+
+	if (kvm->created_vcpus) {
+		/* We don't allow to change this value after vcpu created */
+		r = -EINVAL;
+	} else {
+		r = 0;
+		kvm->dirty_ring_size = size;
+	}
+
+	mutex_unlock(&kvm->lock);
+	return r;
+}
+
+static int kvm_vm_ioctl_reset_dirty_pages(struct kvm *kvm)
+{
+	int i;
+	struct kvm_vcpu *vcpu;
+	int cleared = 0;
+
+	if (!kvm->dirty_ring_size)
+		return -EINVAL;
+
+	mutex_lock(&kvm->slots_lock);
+
+	kvm_for_each_vcpu(i, vcpu, kvm)
+		cleared += kvm_dirty_ring_reset(vcpu);
+
+	mutex_unlock(&kvm->slots_lock);
+
+	if (cleared)
+		kvm_flush_remote_tlbs(kvm);
+
+	return cleared;
 }
 
 int __attribute__((weak)) kvm_vm_ioctl_enable_cap(struct kvm *kvm,
@@ -3282,6 +3428,8 @@ static int kvm_vm_ioctl_enable_cap_generic(struct kvm *kvm,
 		kvm->manual_dirty_log_protect = cap->args[0];
 		return 0;
 #endif
+	case KVM_CAP_DIRTY_LOG_RING:
+		return kvm_vm_ioctl_enable_dirty_log_ring(kvm, cap->args[0]);
 	default:
 		return kvm_vm_ioctl_enable_cap(kvm, cap);
 	}
@@ -3468,6 +3616,9 @@ out_free_irq_routing:
 	}
 	case KVM_CHECK_EXTENSION:
 		r = kvm_vm_ioctl_check_extension_generic(kvm, arg);
+		break;
+	case KVM_RESET_DIRTY_RINGS:
+		r = kvm_vm_ioctl_reset_dirty_pages(kvm);
 		break;
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
