@@ -13,6 +13,9 @@
 #include <time.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <errno.h>
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
 #include <asm/barrier.h>
@@ -59,7 +62,9 @@
 # define test_and_clear_bit_le	test_and_clear_bit
 #endif
 
-#define TEST_DIRTY_RING_COUNT		1024
+#define TEST_DIRTY_RING_COUNT		65536
+
+#define SIG_IPI SIGUSR1
 
 /*
  * Guest/Host shared variables. Ensure addr_gva2hva() and/or
@@ -151,6 +156,12 @@ enum log_mode_t {
 
 /* Mode of logging.  Default is LOG_MODE_DIRTY_LOG */
 static enum log_mode_t host_log_mode;
+pthread_t vcpu_thread;
+
+static void vcpu_kick(void)
+{
+	pthread_kill(vcpu_thread, SIG_IPI);
+}
 
 static void clear_log_create_vm_done(struct kvm_vm *vm)
 {
@@ -179,9 +190,12 @@ static void clear_log_collect_dirty_pages(struct kvm_vm *vm, int slot,
 	kvm_vm_clear_dirty_log(vm, slot, bitmap, 0, num_pages);
 }
 
-static void default_after_vcpu_run(struct kvm_vm *vm)
+static void default_after_vcpu_run(struct kvm_vm *vm, int ret, int err)
 {
 	struct kvm_run *run = vcpu_state(vm, VCPU_ID);
+
+	TEST_ASSERT(ret == 0 || (ret == -1 && err == EINTR),
+		    "vcpu run failed: errno=%d", err);
 
 	TEST_ASSERT(get_ucall(vm, VCPU_ID, NULL) == UCALL_SYNC,
 		    "Invalid guest sync status: exit_reason=%s\n",
@@ -207,20 +221,17 @@ static void dirty_ring_collect_dirty_pages(struct kvm_vm *vm, int slot,
 	uint32_t avail, fetch, count = 0, ret;
 	static uint32_t last_fetch;
 
+	vcpu_kick();
+
 	/*
-	 * Before fetching the dirty pages, we need a vmexit of the
-	 * worker vcpu to make sure the hardware dirty buffers were
-	 * flushed.  This is not needed for dirty-log/clear-log tests
-	 * because get dirty log will natually do so.
-	 *
-	 * For now we do it in the simple way - we simply wait until
-	 * the vcpu uses up the soft dirty ring, then it'll always
-	 * do a vmexit to make sure that PML buffers will be flushed.
-	 * In real hypervisors, we probably need a vcpu kick or to
-	 * stop the vcpus (before the final sync) to make sure we'll
-	 * get all the existing dirty PFNs even cached in hardware.
+	 * These steps will make sure hardware buffer flushed to dirty
+	 * ring.  Now with the vcpu kick mechanism we can keep the
+	 * vcpu running even during collecting dirty bits without ring
+	 * full.
 	 */
 	sem_wait(&dirty_ring_vcpu_stop);
+	DEBUG("Notifying vcpu to continue\n");
+	sem_post(&dirty_ring_vcpu_cont);
 
 	dirty_gfns = vcpu_map_dirty_ring(vm, VCPU_ID);
 
@@ -265,12 +276,9 @@ static void dirty_ring_collect_dirty_pages(struct kvm_vm *vm, int slot,
 	/* Cleared pages should be the same as collected */
 	TEST_ASSERT(ret == count, "Reset dirty pages (%u) mismatch with "
 		    "collected (%u)", ret, count);
-
-	DEBUG("Notifying vcpu to continue\n");
-	sem_post(&dirty_ring_vcpu_cont);
 }
 
-static void dirty_ring_after_vcpu_run(struct kvm_vm *vm)
+static void dirty_ring_after_vcpu_run(struct kvm_vm *vm, int ret, int err)
 {
 	struct kvm_run *run = vcpu_state(vm, VCPU_ID);
 
@@ -278,9 +286,11 @@ static void dirty_ring_after_vcpu_run(struct kvm_vm *vm)
 	if (get_ucall(vm, VCPU_ID, NULL) == UCALL_SYNC) {
 		/* We should allow this to continue */
 		;
-	} else if (run->exit_reason == KVM_EXIT_DIRTY_RING_FULL) {
+	} else if (run->exit_reason == KVM_EXIT_DIRTY_RING_FULL ||
+		   (ret == -1 && err == EINTR)) {
+		/* Either ring full, or we're probably kicked out */
 		sem_post(&dirty_ring_vcpu_stop);
-		DEBUG("vcpu stops because dirty ring full...\n");
+		DEBUG("vcpu stops because dirty ring full or kicked...\n");
 		sem_wait(&dirty_ring_vcpu_cont);
 		DEBUG("vcpu continues now.\n");
 	} else {
@@ -304,7 +314,7 @@ struct log_mode {
 	void (*collect_dirty_pages) (struct kvm_vm *vm, int slot,
 				     void *bitmap, uint32_t num_pages);
 	/* Hook to call when after each vcpu run */
-	void (*after_vcpu_run)(struct kvm_vm *vm);
+	void (*after_vcpu_run)(struct kvm_vm *vm, int ret, int err);
 	void (*before_vcpu_join) (void);
 } log_modes[LOG_MODE_NUM] = {
 	{
@@ -364,12 +374,12 @@ static void log_mode_collect_dirty_pages(struct kvm_vm *vm, int slot,
 	mode->collect_dirty_pages(vm, slot, bitmap, num_pages);
 }
 
-static void log_mode_after_vcpu_run(struct kvm_vm *vm)
+static void log_mode_after_vcpu_run(struct kvm_vm *vm, int ret, int err)
 {
 	struct log_mode *mode = &log_modes[host_log_mode];
 
 	if (mode->after_vcpu_run)
-		mode->after_vcpu_run(vm);
+		mode->after_vcpu_run(vm, ret, err);
 }
 
 static void log_mode_before_vcpu_join(void)
@@ -388,20 +398,46 @@ static void generate_random_array(uint64_t *guest_array, uint64_t size)
 		guest_array[i] = random();
 }
 
+/* Only way to pass this to the signal handler */
+struct kvm_vm *current_vm;
+
+static void vcpu_sig_handler(int sig)
+{
+	struct kvm_run *run;
+
+	TEST_ASSERT(sig == SIG_IPI, "unknown signal: %d", sig);
+	run = vcpu_state(current_vm, VCPU_ID);
+	WRITE_ONCE(run->immediate_exit, 1);
+}
+
+static void vcpu_sig_clear(void)
+{
+	struct kvm_run *run = vcpu_state(current_vm, VCPU_ID);
+
+	WRITE_ONCE(run->immediate_exit, 0);
+}
+
 static void *vcpu_worker(void *data)
 {
 	int ret;
 	struct kvm_vm *vm = data;
 	uint64_t *guest_array;
+	struct sigaction sigact;
+
+	current_vm = vm;
+	memset(&sigact, 0, sizeof(sigact));
+	sigact.sa_handler = vcpu_sig_handler;
+	sigaction(SIG_IPI, &sigact, NULL);
 
 	guest_array = addr_gva2hva(vm, (vm_vaddr_t)random_array);
 
 	while (!READ_ONCE(host_quit)) {
+		/* Clear any existing kick signals */
+		vcpu_sig_clear();
 		generate_random_array(guest_array, TEST_PAGES_PER_LOOP);
 		/* Let the guest dirty the random pages */
-		ret = _vcpu_run(vm, VCPU_ID);
-		TEST_ASSERT(ret == 0, "vcpu_run failed: %d\n", ret);
-		log_mode_after_vcpu_run(vm);
+		ret = __vcpu_run(vm, VCPU_ID);
+		log_mode_after_vcpu_run(vm, ret, errno);
 	}
 
 	return NULL;
@@ -497,7 +533,6 @@ static struct kvm_vm *create_vm(enum vm_guest_mode mode, uint32_t vcpuid,
 static void run_test(enum vm_guest_mode mode, unsigned long iterations,
 		     unsigned long interval, uint64_t phys_offset)
 {
-	pthread_t vcpu_thread;
 	struct kvm_vm *vm;
 	unsigned long *bmap;
 
