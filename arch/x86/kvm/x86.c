@@ -9584,7 +9584,15 @@ void kvm_arch_sync_events(struct kvm *kvm)
 	kvm_free_pit(kvm);
 }
 
-int __x86_set_memory_region(struct kvm *kvm, int id, gpa_t gpa, u32 size)
+/*
+ * If `uaddr' is specified, `*uaddr' will be returned with the
+ * userspace address that was just allocated.  `uaddr' is only
+ * meaningful if the function returns zero, and `uaddr' will only be
+ * valid when with either the slots_lock or with the SRCU read lock
+ * held.  After we release the lock, the returned `uaddr' will be invalid.
+ */
+int __x86_set_memory_region(struct kvm *kvm, int id, gpa_t gpa, u32 size,
+			    unsigned long *uaddr)
 {
 	int i, r;
 	unsigned long hva;
@@ -9608,6 +9616,8 @@ int __x86_set_memory_region(struct kvm *kvm, int id, gpa_t gpa, u32 size)
 			      MAP_SHARED | MAP_ANONYMOUS, 0);
 		if (IS_ERR((void *)hva))
 			return PTR_ERR((void *)hva);
+		if (uaddr)
+			*uaddr = hva;
 	} else {
 		if (!slot->npages)
 			return 0;
@@ -9650,10 +9660,10 @@ void kvm_arch_destroy_vm(struct kvm *kvm)
 		 * or fd copying.
 		 */
 		__x86_set_memory_region(kvm, APIC_ACCESS_PAGE_PRIVATE_MEMSLOT,
-					0, 0);
+					0, 0, NULL);
 		__x86_set_memory_region(kvm, IDENTITY_PAGETABLE_PRIVATE_MEMSLOT,
-					0, 0);
-		__x86_set_memory_region(kvm, TSS_PRIVATE_MEMSLOT, 0, 0);
+					0, 0, NULL);
+		__x86_set_memory_region(kvm, TSS_PRIVATE_MEMSLOT, 0, 0, NULL);
 	}
 	if (kvm_x86_ops->vm_destroy)
 		kvm_x86_ops->vm_destroy(kvm);
