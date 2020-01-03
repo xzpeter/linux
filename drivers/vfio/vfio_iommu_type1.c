@@ -27,6 +27,7 @@
 #include <linux/iommu.h>
 #include <linux/module.h>
 #include <linux/mm.h>
+#include <linux/mmu_context.h>
 #include <linux/rbtree.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/mm.h>
@@ -2326,6 +2327,85 @@ static int vfio_iommu_type1_unregister_notifier(void *iommu_data,
 	return blocking_notifier_chain_unregister(&iommu->notifier, nb);
 }
 
+static int next_segment(unsigned long len, int offset)
+{
+	if (len > PAGE_SIZE - offset)
+		return PAGE_SIZE - offset;
+	else
+		return len;
+}
+
+static int vfio_iommu_type1_rw_iova_seg(struct vfio_iommu *iommu,
+					  unsigned long iova, void *data,
+					  unsigned long seg_len,
+					  unsigned long offset,
+					  bool write)
+{
+	struct mm_struct *mm;
+	unsigned long vaddr;
+	struct vfio_dma *dma;
+	bool kthread = current->mm == NULL;
+	int ret = 0;
+
+	dma = vfio_find_dma(iommu, iova, PAGE_SIZE);
+	if (!dma)
+		return -EINVAL;
+
+	mm = get_task_mm(dma->task);
+
+	if (!mm)
+		return -ENODEV;
+
+	if (kthread)
+		use_mm(mm);
+	else if (current->mm != mm) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	vaddr = dma->vaddr + iova - dma->iova + offset;
+
+	ret = write ? __copy_to_user((void __user *)vaddr,
+			data, seg_len) :
+		__copy_from_user(data, (void __user *)vaddr,
+				seg_len);
+	if (ret)
+		ret = -EFAULT;
+
+	if (kthread)
+		unuse_mm(mm);
+out:
+	mmput(mm);
+	return ret;
+}
+
+static int vfio_iommu_type1_iova_rw(void *iommu_data, unsigned long iova,
+				    void *data, unsigned long len, bool write)
+{
+	struct vfio_iommu *iommu = iommu_data;
+	int offset = iova & ~PAGE_MASK;
+	int seg_len;
+	int ret = 0;
+
+	iova = iova & PAGE_MASK;
+
+	mutex_lock(&iommu->lock);
+	while ((seg_len = next_segment(len, offset)) > 0) {
+		ret = vfio_iommu_type1_rw_iova_seg(iommu, iova, data,
+						   seg_len, offset, write);
+		if (ret)
+			break;
+
+		offset = 0;
+		len -= seg_len;
+		data += seg_len;
+		iova += PAGE_SIZE;
+	}
+
+	mutex_unlock(&iommu->lock);
+	return ret;
+}
+
 static const struct vfio_iommu_driver_ops vfio_iommu_driver_ops_type1 = {
 	.name			= "vfio-iommu-type1",
 	.owner			= THIS_MODULE,
@@ -2338,6 +2418,7 @@ static const struct vfio_iommu_driver_ops vfio_iommu_driver_ops_type1 = {
 	.unpin_pages		= vfio_iommu_type1_unpin_pages,
 	.register_notifier	= vfio_iommu_type1_register_notifier,
 	.unregister_notifier	= vfio_iommu_type1_unregister_notifier,
+	.iova_rw		= vfio_iommu_type1_iova_rw,
 };
 
 static int __init vfio_iommu_type1_init(void)

@@ -1961,6 +1961,51 @@ err_unpin_pages:
 }
 EXPORT_SYMBOL(vfio_unpin_pages);
 
+/*
+ * Read/Write a range of userspace IOVAs for a device into/from a kernel
+ * buffer without pinning the userspace memory
+ * @dev [in]  : device
+ * @iova [in] : base IOVA of a userspace buffer
+ * @data [in] : pointer to kernel buffer
+ * @len [in]  : kernel buffer length
+ * @write     : indicate read or write
+ * Return error on failure or 0 on success.
+ */
+int vfio_iova_rw(struct device *dev, unsigned long iova, void *data,
+		   unsigned long len, bool write)
+{
+	struct vfio_container *container;
+	struct vfio_group *group;
+	struct vfio_iommu_driver *driver;
+	int ret = 0;
+
+	if (!dev || !data || len <= 0)
+		return -EINVAL;
+
+	group = vfio_group_get_from_dev(dev);
+	if (!group)
+		return -ENODEV;
+
+	ret = vfio_group_add_container_user(group);
+	if (ret)
+		goto out;
+
+	container = group->container;
+	driver = container->iommu_driver;
+
+	if (likely(driver && driver->ops->iova_rw))
+		ret = driver->ops->iova_rw(container->iommu_data,
+					   iova, data, len, write);
+	else
+		ret = -ENOTTY;
+
+	vfio_group_try_dissolve_container(group);
+out:
+	vfio_group_put(group);
+	return ret;
+}
+EXPORT_SYMBOL(vfio_iova_rw);
+
 static int vfio_register_iommu_notifier(struct vfio_group *group,
 					unsigned long *events,
 					struct notifier_block *nb)
