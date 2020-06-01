@@ -80,13 +80,10 @@ static inline bool userfaultfd_armed(struct vm_area_struct *vma)
 	return vma->vm_flags & (VM_UFFD_MISSING | VM_UFFD_WP);
 }
 
-static inline bool vma_can_userfault(struct vm_area_struct *vma,
-				     unsigned long vm_flags)
+static inline bool vma_can_userfault(struct vm_area_struct *vma)
 {
-	/* FIXME: add WP support to hugetlbfs and shmem */
-	return vma_is_anonymous(vma) ||
-		((is_vm_hugetlb_page(vma) || vma_is_shmem(vma)) &&
-		 !(vm_flags & VM_UFFD_WP));
+	return vma_is_anonymous(vma) || vma_is_shmem(vma) ||
+	    is_vm_hugetlb_page(vma);
 }
 
 extern int dup_userfaultfd(struct vm_area_struct *, struct list_head *);
