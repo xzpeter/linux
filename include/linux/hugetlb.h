@@ -11,6 +11,7 @@
 #include <linux/kref.h>
 #include <linux/pgtable.h>
 #include <linux/gfp.h>
+#include <linux/userfaultfd_k.h>
 
 struct ctl_table;
 struct user_struct;
@@ -950,5 +951,20 @@ static inline __init void hugetlb_cma_check(void)
 {
 }
 #endif
+
+bool want_pmd_share(struct vm_area_struct *vma)
+{
+#ifdef CONFIG_ARCH_WANT_HUGE_PMD_SHARE
+	/*
+	 * Never enable huge pmd sharing on uffd registered vmas, because uffd
+	 * protect information is per pgtable entry.
+	 */
+	if (userfaultfd_armed(vma))
+		return false;
+	return true;
+#else
+	return false;
+#endif
+}
 
 #endif /* _LINUX_HUGETLB_H */
