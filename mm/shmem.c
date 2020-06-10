@@ -2289,7 +2289,8 @@ static int shmem_mfill_atomic_pte(struct mm_struct *dst_mm,
 				  unsigned long dst_addr,
 				  unsigned long src_addr,
 				  bool zeropage,
-				  struct page **pagep)
+				  struct page **pagep,
+				  bool wp_copy)
 {
 	struct inode *inode = file_inode(dst_vma->vm_file);
 	struct shmem_inode_info *info = SHMEM_I(inode);
@@ -2411,10 +2412,12 @@ int shmem_mcopy_atomic_pte(struct mm_struct *dst_mm,
 			   struct vm_area_struct *dst_vma,
 			   unsigned long dst_addr,
 			   unsigned long src_addr,
-			   struct page **pagep)
+			   struct page **pagep,
+			   bool wp_copy)
 {
 	return shmem_mfill_atomic_pte(dst_mm, dst_pmd, dst_vma,
-				      dst_addr, src_addr, false, pagep);
+				      dst_addr, src_addr, false, pagep,
+				      wp_copy);
 }
 
 int shmem_mfill_zeropage_pte(struct mm_struct *dst_mm,
@@ -2425,7 +2428,7 @@ int shmem_mfill_zeropage_pte(struct mm_struct *dst_mm,
 	struct page *page = NULL;
 
 	return shmem_mfill_atomic_pte(dst_mm, dst_pmd, dst_vma,
-				      dst_addr, 0, true, &page);
+				      dst_addr, 0, true, &page, false);
 }
 
 #ifdef CONFIG_TMPFS
