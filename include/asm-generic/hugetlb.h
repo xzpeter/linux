@@ -27,6 +27,11 @@ static inline pte_t huge_pte_mkdirty(pte_t pte)
 	return pte_mkdirty(pte);
 }
 
+static inline pte_t huge_pte_mkuffd_wp(pte_t pte)
+{
+	return pte_mkuffd_wp(pte);
+}
+
 static inline pte_t huge_pte_modify(pte_t pte, pgprot_t newprot)
 {
 	return pte_modify(pte, newprot);
