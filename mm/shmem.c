@@ -2359,7 +2359,7 @@ static int shmem_mfill_atomic_pte(struct mm_struct *dst_mm,
 				  struct vm_area_struct *dst_vma,
 				  unsigned long dst_addr,
 				  unsigned long src_addr,
-				  bool zeropage,
+				  bool zeropage,  bool wp_copy,
 				  struct page **pagep)
 {
 	struct inode *inode = file_inode(dst_vma->vm_file);
@@ -2422,9 +2422,13 @@ static int shmem_mfill_atomic_pte(struct mm_struct *dst_mm,
 		goto out_release;
 
 	_dst_pte = mk_pte(page, dst_vma->vm_page_prot);
-	if (dst_vma->vm_flags & VM_WRITE)
-		_dst_pte = pte_mkwrite(pte_mkdirty(_dst_pte));
-	else {
+	if (dst_vma->vm_flags & VM_WRITE) {
+		pte_mkdirty(_dst_pte);
+		if (wp_copy)
+			_dst_pte = pte_mkuffd_wp(_dst_pte);
+		else
+			_dst_pte = pte_mkwrite(_dst_pte);	
+	} else {
 		/*
 		 * We don't set the pte dirty if the vma has no
 		 * VM_WRITE permission, so mark the page dirty or it
