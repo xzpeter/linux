@@ -71,6 +71,8 @@
 #include <linux/dax.h>
 #include <linux/oom.h>
 #include <linux/numa.h>
+#include <linux/perf_event.h>
+#include <linux/ptrace.h>
 
 #include <trace/events/kmem.h>
 
@@ -4360,6 +4362,36 @@ retry_pud:
 	return handle_pte_fault(&vmf);
 }
 
+/**
+ * mm_account_fault - Do page fault accountings
+ * @regs: the pt_regs struct pointer.  When set to NULL, will skip accounting
+ * @address: faulted address.
+ * @major: whether this is a major fault.
+ *
+ * This will take care of most of the page fault accountings.  It should only
+ * be called when a page fault is completed.  For example, VM_FAULT_RETRY means
+ * the fault needs to be retried again later, so it should not contribute to
+ * the accounting.
+ *
+ * The accounting will also include the PERF_COUNT_SW_PAGE_FAULTS_[MAJ|MIN]
+ * perf counter updates.  Note: the handling of PERF_COUNT_SW_PAGE_FAULTS
+ * should still be in per-arch page fault handlers at the entry of page fault.
+ */
+static inline void mm_account_fault(struct pt_regs *regs,
+				    unsigned long address, bool major)
+{
+	if (!regs)
+		return;
+
+	if (major) {
+		current->maj_flt++;
+		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ, 1, regs, address);
+	} else {
+		current->min_flt++;
+		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN, 1, regs, address);
+	}
+}
+
 /*
  * By the time we get here, we already hold the mm semaphore
  *
@@ -4367,7 +4399,7 @@ retry_pud:
  * return value.  See filemap_fault() and __lock_page_or_retry().
  */
 vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
-		unsigned int flags)
+			   unsigned int flags, struct pt_regs *regs)
 {
 	vm_fault_t ret;
 
@@ -4407,6 +4439,34 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 		if (task_in_memcg_oom(current) && !(ret & VM_FAULT_OOM))
 			mem_cgroup_oom_synchronize(false);
 	}
+
+	if (ret & (VM_FAULT_RETRY | VM_FAULT_ERROR))
+		return ret;
+
+	/*
+	 * Do accounting in the common code, to avoid unnecessary
+	 * architecture differences or duplicated code.
+	 *
+	 * We arbitrarily make the rules be:
+	 *
+	 *  - Unsuccessful faults do not count (e.g. when the address wasn't
+	 *    valid). That includes arch_vma_access_permitted() failing above.
+	 *
+	 *    So this is expressly not a "this many hardware page faults"
+	 *    counter. Use the hw profiling for that.
+	 *
+	 *  - Incomplete faults do not count (e.g. RETRY).  They will only
+	 *    count once completed.
+	 *
+	 *  - The fault counts as a "major" fault when the final successful
+	 *    fault is VM_FAULT_MAJOR, or if it was a retry (which implies that
+	 *    we couldn't handle it immediately previously).
+	 *
+	 *  - If the fault is done for GUP, regs will be NULL and no accounting
+	 *    will be done.
+	 */
+	mm_account_fault(regs, address, (ret & VM_FAULT_MAJOR) ||
+			 (flags & FAULT_FLAG_TRIED));
 
 	return ret;
 }
