@@ -16,6 +16,7 @@
 #include <linux/page-flags.h>
 #include <linux/sched/signal.h>
 #include <linux/io.h>
+#include <linux/perf_event.h>
 
 #include <asm/tlbflush.h>
 
@@ -159,7 +160,8 @@ static inline bool access_error(unsigned int fsr, struct vm_area_struct *vma)
 }
 
 static vm_fault_t __do_pf(struct mm_struct *mm, unsigned long addr,
-		unsigned int fsr, unsigned int flags, struct task_struct *tsk)
+			  unsigned int fsr, unsigned int flags,
+			  struct task_struct *tsk, struct pt_regs *regs)
 {
 	struct vm_area_struct *vma;
 	vm_fault_t fault;
@@ -185,7 +187,7 @@ good_area:
 	 * If for any reason at all we couldn't handle the fault, make
 	 * sure we exit gracefully rather than endlessly redo the fault.
 	 */
-	fault = handle_mm_fault(vma, addr & PAGE_MASK, flags, NULL);
+	fault = handle_mm_fault(vma, addr & PAGE_MASK, flags, regs);
 	return fault;
 
 check_stack:
@@ -218,6 +220,8 @@ static int do_pf(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	if (!(fsr ^ 0x12))
 		flags |= FAULT_FLAG_WRITE;
 
+	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, addr);
+
 	/*
 	 * As per x86, we may deadlock here.  However, since the kernel only
 	 * validly references user space from well defined areas of the code,
@@ -243,7 +247,7 @@ retry:
 #endif
 	}
 
-	fault = __do_pf(mm, addr, fsr, flags, tsk);
+	fault = __do_pf(mm, addr, fsr, flags, tsk, regs);
 
 	/* If we need to retry but a fatal signal is pending, handle the
 	 * signal first. We do not need to release the mmap_lock because
@@ -253,10 +257,6 @@ retry:
 		return 0;
 
 	if (!(fault & VM_FAULT_ERROR) && (flags & FAULT_FLAG_ALLOW_RETRY)) {
-		if (fault & VM_FAULT_MAJOR)
-			tsk->maj_flt++;
-		else
-			tsk->min_flt++;
 		if (fault & VM_FAULT_RETRY) {
 			flags |= FAULT_FLAG_TRIED;
 			goto retry;
