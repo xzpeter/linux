@@ -4365,6 +4365,8 @@ retry_pud:
 /**
  * mm_account_fault - Do page fault accountings
  * @regs: the pt_regs struct pointer.  When set to NULL, will skip accounting
+ *        of perf event counters, but we'll still do the per-task accounting to
+ *        the task who triggered this page fault.
  * @address: faulted address.
  * @major: whether this is a major fault.
  *
@@ -4380,16 +4382,18 @@ retry_pud:
 static inline void mm_account_fault(struct pt_regs *regs,
 				    unsigned long address, bool major)
 {
+	if (major)
+		current->maj_flt++;
+	else
+		current->min_flt++;
+
 	if (!regs)
 		return;
 
-	if (major) {
-		current->maj_flt++;
+	if (major)
 		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ, 1, regs, address);
-	} else {
-		current->min_flt++;
+	else
 		perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN, 1, regs, address);
-	}
 }
 
 /*
@@ -4462,8 +4466,9 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	 *    fault is VM_FAULT_MAJOR, or if it was a retry (which implies that
 	 *    we couldn't handle it immediately previously).
 	 *
-	 *  - If the fault is done for GUP, regs will be NULL and no accounting
-	 *    will be done.
+	 *  - If the fault is done for GUP, regs will be NULL and we only do
+	 *    the accounting for the per thread fault counters who triggered
+	 *    the fault, and we skip the perf event updates.
 	 */
 	mm_account_fault(regs, address, (ret & VM_FAULT_MAJOR) ||
 			 (flags & FAULT_FLAG_TRIED));
