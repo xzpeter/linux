@@ -1645,22 +1645,21 @@ void ConfigMainWindow::setMenuLink(struct menu *menu)
 			return;
 		list->setRootMenu(parent);
 		break;
-	case symbolMode:
+	case menuMode:
 		if (menu->flags & MENU_ROOT) {
+			menuList->setRootMenu(menu);
+			configList->clearSelection();
+			list = configList;
+		} else {
 			configList->setRootMenu(menu);
 			configList->clearSelection();
-			list = menuList;
-		} else {
-			list = configList;
+
 			parent = menu_get_parent_menu(menu->parent);
 			if (!parent)
 				return;
-			item = menuList->findConfigItem(parent);
-			if (item) {
-				item->setSelected(true);
-				menuList->scrollToItem(item);
-			}
-			list->setRootMenu(parent);
+			menuList->setRootMenu(parent);
+
+			list = menuList;
 		}
 		break;
 	case fullMode:
