@@ -62,16 +62,16 @@ static inline bool userfaultfd_wp(struct vm_area_struct *vma)
 	return vma->vm_flags & VM_UFFD_WP;
 }
 
-static inline bool userfaultfd_pte_wp(struct vm_area_struct *vma,
-				      pte_t pte)
+static inline bool userfaultfd_pte_wp(struct vm_fault *vmf, pte_t pte)
 {
-	return userfaultfd_wp(vma) && pte_uffd_wp(pte);
+	return (vmf->flags & FAULT_FLAG_WRITE) &&
+	    userfaultfd_wp(vmf->vma) && pte_uffd_wp(pte);
 }
 
-static inline bool userfaultfd_huge_pmd_wp(struct vm_area_struct *vma,
-					   pmd_t pmd)
+static inline bool userfaultfd_huge_pmd_wp(struct vm_fault *vmf, pmd_t pmd)
 {
-	return userfaultfd_wp(vma) && pmd_uffd_wp(pmd);
+	return (vmf->flags & FAULT_FLAG_WRITE) &&
+	    userfaultfd_wp(vmf->vma) && pmd_uffd_wp(pmd);
 }
 
 static inline bool userfaultfd_armed(struct vm_area_struct *vma)
@@ -123,14 +123,12 @@ static inline bool userfaultfd_wp(struct vm_area_struct *vma)
 	return false;
 }
 
-static inline bool userfaultfd_pte_wp(struct vm_area_struct *vma,
-				      pte_t pte)
+static inline bool userfaultfd_pte_wp(struct vm_fault *vmf, pte_t pte)
 {
 	return false;
 }
 
-static inline bool userfaultfd_huge_pmd_wp(struct vm_area_struct *vma,
-					   pmd_t pmd)
+static inline bool userfaultfd_huge_pmd_wp(struct vm_fault *vmf, pmd_t pmd)
 {
 	return false;
 }

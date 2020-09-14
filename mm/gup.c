@@ -381,13 +381,13 @@ static int follow_pfn_pte(struct vm_area_struct *vma, unsigned long address,
 }
 
 /*
- * FOLL_FORCE can write to even unwritable pte's, but only
- * after we've gone through a COW cycle and they are dirty.
+ * FOLL_FORCE (or FOLL_PIN, which requires enforced COW even for read) can
+ * write to even unwritable pte's, but only after we've gone through a COW
+ * cycle and they are dirty.
  */
 static inline bool can_follow_write_pte(pte_t pte, unsigned int flags)
 {
-	return pte_write(pte) ||
-		((flags & FOLL_FORCE) && (flags & FOLL_COW) && pte_dirty(pte));
+	return pte_write(pte) || ((flags & FOLL_COW) && pte_dirty(pte));
 }
 
 static struct page *follow_page_pte(struct vm_area_struct *vma,
@@ -430,7 +430,12 @@ retry:
 	}
 	if ((flags & FOLL_NUMA) && pte_protnone(pte))
 		goto no_page;
-	if ((flags & FOLL_WRITE) && !can_follow_write_pte(pte, flags)) {
+	/*
+	 * We need the same write permission for FOLL_PIN pages, so that we
+	 * will guarantee to trigger early COW for pinned pages.
+	 */
+	if ((flags & (FOLL_WRITE | FOLL_PIN)) &&
+	    !can_follow_write_pte(pte, flags)) {
 		pte_unmap_unlock(ptep, ptl);
 		return NULL;
 	}
@@ -874,6 +879,8 @@ static int faultin_page(struct vm_area_struct *vma,
 		 */
 		fault_flags |= FAULT_FLAG_TRIED;
 	}
+	if (*flags & FOLL_PIN)
+		fault_flags |= FAULT_FLAG_BREAK_COW;
 
 	ret = handle_mm_fault(vma, address, fault_flags, NULL);
 	if (ret & VM_FAULT_ERROR) {
@@ -2146,7 +2153,7 @@ static int gup_pte_range(pmd_t pmd, unsigned long addr, unsigned long end,
 		if (pte_protnone(pte))
 			goto pte_unmap;
 
-		if (!pte_access_permitted(pte, flags & FOLL_WRITE))
+		if (!pte_access_permitted(pte, flags & (FOLL_WRITE | FOLL_PIN)))
 			goto pte_unmap;
 
 		if (pte_devmap(pte)) {
@@ -2338,7 +2345,7 @@ static int gup_hugepte(pte_t *ptep, unsigned long sz, unsigned long addr,
 
 	pte = huge_ptep_get(ptep);
 
-	if (!pte_access_permitted(pte, flags & FOLL_WRITE))
+	if (!pte_access_permitted(pte, flags & (FOLL_WRITE | FOLL_PIN)))
 		return 0;
 
 	/* hugepages are never "special" */
