@@ -921,6 +921,8 @@ page_copy_prealloc(struct mm_struct *src_mm, struct vm_area_struct *vma,
 	}
 	cgroup_throttle_swaprate(new_page, GFP_KERNEL);
 
+	pr_err("%s: PID %d addr 0x%lx\n", __func__, current->pid, addr);
+
 	return new_page;
 }
 
