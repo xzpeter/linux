@@ -3797,6 +3797,7 @@ static vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct page *page)
 {
 	struct vm_area_struct *vma = vmf->vma;
+	bool pte_changed, uffd_wp = vmf->flags & FAULT_FLAG_UFFD_WP;
 	bool write = vmf->flags & FAULT_FLAG_WRITE;
 	pte_t entry;
 	vm_fault_t ret;
@@ -3807,14 +3808,27 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct page *page)
 			return ret;
 	}
 
+	/*
+	 * Note: besides pte missing, FAULT_FLAG_UFFD_WP could also trigger
+	 * this path where vmf->pte got released before reaching here.  In that
+	 * case, even if vmf->pte==NULL, the pte actually still contains the
+	 * protection pte (by pte_swp_mkuffd_wp_special()).  For that case,
+	 * we'd also like to allocate a new pte like pte none, but check
+	 * differently for changing pte.
+	 */
 	if (!vmf->pte) {
 		ret = pte_alloc_one_map(vmf);
 		if (ret)
 			return ret;
 	}
 
+	if (unlikely(uffd_wp))
+		pte_changed = !pte_swp_uffd_wp_special(*vmf->pte);
+	else
+		pte_changed = !pte_none(*vmf->pte);
+
 	/* Re-check under ptl */
-	if (unlikely(!pte_none(*vmf->pte))) {
+	if (unlikely(pte_changed)) {
 		update_mmu_tlb(vma, vmf->address, vmf->pte);
 		return VM_FAULT_NOPAGE;
 	}
@@ -3824,6 +3838,11 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct page *page)
 	entry = pte_sw_mkyoung(entry);
 	if (write)
 		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+	if (uffd_wp) {
+		/* This should only be triggered by a read fault */
+		WARN_ON_ONCE(write);
+		entry = pte_mkuffd_wp(pte_wrprotect(entry));
+	}
 	/* copy-on-write page */
 	if (write && !(vma->vm_flags & VM_SHARED)) {
 		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
@@ -3997,9 +4016,27 @@ out:
 	return ret;
 }
 
+/* Return true if we should do read fault-around, false otherwise */
+static inline bool should_fault_around(struct vm_fault *vmf)
+{
+	/* No ->map_pages?  No way to fault around... */
+	if (!vmf->vma->vm_ops->map_pages)
+		return false;
+
+	/*
+	 * Don't do fault around for FAULT_FLAG_UFFD_WP because it means we
+	 * want to recover a previously wr-protected pte.  This flag is a
+	 * per-pte information, so it could confuse all the pages around the
+	 * current page when faulted in.  Give up on that quickly.
+	 */
+	if (vmf->flags & FAULT_FLAG_UFFD_WP)
+		return false;
+
+	return fault_around_bytes >> PAGE_SHIFT > 1;
+}
+
 static vm_fault_t do_read_fault(struct vm_fault *vmf)
 {
-	struct vm_area_struct *vma = vmf->vma;
 	vm_fault_t ret = 0;
 
 	/*
@@ -4007,7 +4044,7 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
 	 * if page by the offset is not ready to be mapped (cold cache or
 	 * something).
 	 */
-	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
+	if (should_fault_around(vmf)) {
 		ret = do_fault_around(vmf);
 		if (ret)
 			return ret;
@@ -4322,6 +4359,68 @@ static vm_fault_t wp_huge_pud(struct vm_fault *vmf, pud_t orig_pud)
 	return VM_FAULT_FALLBACK;
 }
 
+static vm_fault_t uffd_wp_clear_special(struct vm_fault *vmf)
+{
+	vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm, vmf->pmd,
+				       vmf->address, &vmf->ptl);
+	/*
+	 * Be careful so that we will only recover a special uffd-wp pte into a
+	 * none pte.  Otherwise it means the pte could have changed, so retry.
+	 */
+	if (pte_swp_uffd_wp_special(*vmf->pte))
+		pte_clear(vmf->vma->vm_mm, vmf->address, vmf->pte);
+	pte_unmap_unlock(vmf->pte, vmf->ptl);
+	return 0;
+}
+
+/*
+ * This is actually a page-missing access, but with uffd-wp special pte
+ * installed.  It means this pte was wr-protected before being unmapped.
+ */
+vm_fault_t uffd_wp_handle_special(struct vm_fault *vmf)
+{
+	/* Careful!  vmf->pte unmapped after return */
+	if (!pte_unmap_same(vmf))
+		return 0;
+
+	/*
+	 * Just in case there're leftover special ptes even after the region
+	 * got unregistered - we can simply clear them.
+	 */
+	if (unlikely(!userfaultfd_wp(vmf->vma) || vma_is_anonymous(vmf->vma)))
+		return uffd_wp_clear_special(vmf);
+
+	/*
+	 * Tell all the rest of the fault code: we're handling a special pte,
+	 * always remember to arm the uffd-wp bit when intalling the new pte.
+	 */
+	vmf->flags |= FAULT_FLAG_UFFD_WP;
+
+	/*
+	 * Let's assume this is a read fault no matter what.  If it is a real
+	 * write access, it'll fault again into do_wp_page() where the message
+	 * will be generated before the thread yields itself.
+	 *
+	 * Ideally we can also handle write immediately before return, but this
+	 * should be a slow path already (pte unmapped), so be simple first.
+	 */
+	vmf->flags &= ~FAULT_FLAG_WRITE;
+
+	return do_fault(vmf);
+}
+
+static vm_fault_t do_swap_pte(struct vm_fault *vmf)
+{
+	/*
+	 * We need to handle special swap ptes before handling ptes that
+	 * contain swap entries, always.
+	 */
+	if (unlikely(pte_swp_uffd_wp_special(vmf->orig_pte)))
+		return uffd_wp_handle_special(vmf);
+
+	return do_swap_page(vmf);
+}
+
 /*
  * These routines also need to handle stuff like marking pages dirty
  * and/or accessed for architectures that don't do it in hardware (most
@@ -4385,7 +4484,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!pte_present(vmf->orig_pte))
-		return do_swap_page(vmf);
+		return do_swap_pte(vmf);
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
 		return do_numa_page(vmf);
