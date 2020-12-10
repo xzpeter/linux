@@ -29,6 +29,7 @@
 #include <linux/uaccess.h>
 #include <linux/mm_inline.h>
 #include <linux/pgtable.h>
+#include <linux/userfaultfd_k.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
@@ -176,6 +177,32 @@ static unsigned long change_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 				set_pte_at(vma->vm_mm, addr, pte, newpte);
 				pages++;
 			}
+		} else if (unlikely(is_swap_special_pte(oldpte))) {
+			if (uffd_wp_resolve && !vma_is_anonymous(vma) &&
+			    pte_swp_uffd_wp_special(oldpte)) {
+				/*
+				 * This is uffd-wp special pte and we'd like to
+				 * unprotect it.  What we need to do is simply
+				 * recover the pte into a none pte; the next
+				 * page fault will fault in the page.
+				 */
+				pte_clear(vma->vm_mm, addr, pte);
+				pages++;
+			}
+		} else {
+			/* It must be an none page, or what else?.. */
+			WARN_ON_ONCE(!pte_none(oldpte));
+			if (unlikely(uffd_wp && !vma_is_anonymous(vma))) {
+				/*
+				 * For file-backed mem, we need to be able to
+				 * wr-protect even for a none pte!  Because
+				 * even if the pte is null, the page/swap cache
+				 * could exist.
+				 */
+				set_pte_at(vma->vm_mm, addr, pte,
+					   pte_swp_mkuffd_wp_special(vma));
+				pages++;
+			}
 		}
 	} while (pte++, addr += PAGE_SIZE, addr != end);
 	arch_leave_lazy_mmu_mode();
@@ -209,6 +236,31 @@ static inline int pmd_none_or_clear_bad_unless_trans_huge(pmd_t *pmd)
 	return 0;
 }
 
+/*
+ * We won't need these macros if pte_alloc() also takes a 3rd argument as
+ * "addr".  However it's not true.  Build up these macros so that we can
+ * provide change_protection_prepare() right below.
+ */
+#define  pte_alloc_addr(mm, lvl, addr)  pte_alloc(mm, lvl)
+#define  pmd_alloc_addr(mm, lvl, addr)  pmd_alloc(mm, lvl, addr)
+#define  pud_alloc_addr(mm, lvl, addr)  pud_alloc(mm, lvl, addr)
+#define  p4d_alloc_addr(mm, lvl, addr)  p4d_alloc(mm, lvl, addr)
+
+/*
+ * File-backed vma allows uffd wr-protect upon none ptes/pmds/...  So the
+ * wr-protect information will be stored in the page table entries with the
+ * markers (e.g., PTE_SWP_UFFD_WP_SPECIAL).  Prepare for that by always
+ * populating the page tables to pte level, so that we'll install the markers
+ * in change_pte_range() finally.
+ */
+#define  change_protection_prepare(vma, lvl, sublvl, addr, flags)	\
+	do {								\
+		if (unlikely(cp_flags & MM_CP_UFFD_WP && lvl##_none(*lvl) && \
+			     !vma_is_anonymous(vma)))			\
+			WARN_ON_ONCE(sublvl##_alloc_addr(vma->vm_mm, lvl, \
+							 addr));	\
+	} while (0)
+
 static inline unsigned long change_pmd_range(struct vm_area_struct *vma,
 		pud_t *pud, unsigned long addr, unsigned long end,
 		pgprot_t newprot, unsigned long cp_flags)
@@ -226,6 +278,8 @@ static inline unsigned long change_pmd_range(struct vm_area_struct *vma,
 		unsigned long this_pages;
 
 		next = pmd_addr_end(addr, end);
+
+		change_protection_prepare(vma, pmd, pte, addr, cp_flags);
 
 		/*
 		 * Automatic NUMA balancing walks the tables with mmap_lock
@@ -292,6 +346,7 @@ static inline unsigned long change_pud_range(struct vm_area_struct *vma,
 	pud = pud_offset(p4d, addr);
 	do {
 		next = pud_addr_end(addr, end);
+		change_protection_prepare(vma, pud, pmd, addr, cp_flags);
 		if (pud_none_or_clear_bad(pud))
 			continue;
 		pages += change_pmd_range(vma, pud, addr, next, newprot,
@@ -312,6 +367,7 @@ static inline unsigned long change_p4d_range(struct vm_area_struct *vma,
 	p4d = p4d_offset(pgd, addr);
 	do {
 		next = p4d_addr_end(addr, end);
+		change_protection_prepare(vma, p4d, pud, addr, cp_flags);
 		if (p4d_none_or_clear_bad(p4d))
 			continue;
 		pages += change_pud_range(vma, p4d, addr, next, newprot,
@@ -337,6 +393,7 @@ static unsigned long change_protection_range(struct vm_area_struct *vma,
 	inc_tlb_flush_pending(mm);
 	do {
 		next = pgd_addr_end(addr, end);
+		change_protection_prepare(vma, pgd, p4d, addr, cp_flags);
 		if (pgd_none_or_clear_bad(pgd))
 			continue;
 		pages += change_p4d_range(vma, pgd, addr, next, newprot,
