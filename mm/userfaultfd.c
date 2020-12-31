@@ -300,7 +300,8 @@ retry:
 
 		err = -EEXIST;
 		dst_pteval = huge_ptep_get(dst_pte);
-		if (!huge_pte_none(dst_pteval)) {
+		if (!huge_pte_none(dst_pteval) &&
+		    !pte_swp_uffd_wp_special(dst_pteval)) {
 			mutex_unlock(&hugetlb_fault_mutex_table[hash]);
 			i_mmap_unlock_read(mapping);
 			goto out_unlock;
