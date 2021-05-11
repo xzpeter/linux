@@ -1390,6 +1390,8 @@ static pagemap_entry_t pte_to_pagemap_entry(struct pagemapread *pm,
 
 		if (is_device_private_entry(entry))
 			page = device_private_entry_to_page(entry);
+	} else if (pte_swp_uffd_wp_special(pte)) {
+		flags |= PM_UFFD_WP;
 	}
 
 	if (page && !PageAnon(page))
@@ -1519,10 +1521,15 @@ static int pagemap_hugetlb_range(pte_t *ptep, unsigned long hmask,
 		if (page_mapcount(page) == 1)
 			flags |= PM_MMAP_EXCLUSIVE;
 
+		if (huge_pte_uffd_wp(pte))
+			flags |= PM_UFFD_WP;
+
 		flags |= PM_PRESENT;
 		if (pm->show_pfn)
 			frame = pte_pfn(pte) +
 				((addr & ~hmask) >> PAGE_SHIFT);
+	} else if (pte_swp_uffd_wp_special(pte)) {
+		flags |= PM_UFFD_WP;
 	}
 
 	for (; addr != end; addr += PAGE_SIZE) {
