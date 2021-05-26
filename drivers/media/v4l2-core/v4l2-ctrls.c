@@ -57,6 +57,18 @@ static bool is_new_manual(const struct v4l2_ctrl *master)
 	return master->is_auto && master->val == master->manual_mode_value;
 }
 
+/* Default intra MPEG-2 quantisation coefficients, from the specification. */
+static const u8 mpeg2_intra_quant_matrix[64] = {
+	8,  16, 16, 19, 16, 19, 22, 22,
+	22, 22, 22, 22, 26, 24, 26, 27,
+	27, 27, 26, 26, 26, 26, 27, 27,
+	27, 29, 29, 29, 34, 34, 34, 29,
+	29, 29, 27, 27, 29, 29, 32, 32,
+	34, 34, 37, 38, 37, 35, 35, 34,
+	35, 38, 38, 40, 40, 40, 48, 48,
+	46, 46, 56, 56, 58, 69, 69, 83
+};
+
 /* Returns NULL or a character pointer array containing the menu for
    the given control ID. The pointer array ends with a NULL pointer.
    An empty string signifies a menu entry that is invalid. This allows
@@ -965,8 +977,6 @@ const char *v4l2_ctrl_get_name(u32 id)
 	case V4L2_CID_MPEG_VIDEO_LTR_COUNT:			return "LTR Count";
 	case V4L2_CID_MPEG_VIDEO_FRAME_LTR_INDEX:		return "Frame LTR Index";
 	case V4L2_CID_MPEG_VIDEO_USE_LTR_FRAMES:		return "Use LTR Frames";
-	case V4L2_CID_MPEG_VIDEO_MPEG2_SLICE_PARAMS:		return "MPEG-2 Slice Parameters";
-	case V4L2_CID_MPEG_VIDEO_MPEG2_QUANTIZATION:		return "MPEG-2 Quantization Matrices";
 	case V4L2_CID_FWHT_I_FRAME_QP:				return "FWHT I-Frame QP Value";
 	case V4L2_CID_FWHT_P_FRAME_QP:				return "FWHT P-Frame QP Value";
 
@@ -1215,6 +1225,9 @@ const char *v4l2_ctrl_get_name(u32 id)
 	case V4L2_CID_STATELESS_H264_DECODE_PARAMS:		return "H264 Decode Parameters";
 	case V4L2_CID_STATELESS_FWHT_PARAMS:			return "FWHT Stateless Parameters";
 	case V4L2_CID_STATELESS_VP8_FRAME:			return "VP8 Frame Parameters";
+	case V4L2_CID_STATELESS_MPEG2_SEQUENCE:			return "MPEG-2 Sequence Header";
+	case V4L2_CID_STATELESS_MPEG2_PICTURE:			return "MPEG-2 Picture Header";
+	case V4L2_CID_STATELESS_MPEG2_QUANTISATION:		return "MPEG-2 Quantisation Matrices";
 
 	/* Colorimetry controls */
 	/* Keep the order of the 'case's the same as in v4l2-controls.h! */
@@ -1487,11 +1500,14 @@ void v4l2_ctrl_fill(u32 id, const char **name, enum v4l2_ctrl_type *type,
 	case V4L2_CID_RDS_TX_ALT_FREQS:
 		*type = V4L2_CTRL_TYPE_U32;
 		break;
-	case V4L2_CID_MPEG_VIDEO_MPEG2_SLICE_PARAMS:
-		*type = V4L2_CTRL_TYPE_MPEG2_SLICE_PARAMS;
+	case V4L2_CID_STATELESS_MPEG2_SEQUENCE:
+		*type = V4L2_CTRL_TYPE_MPEG2_SEQUENCE;
 		break;
-	case V4L2_CID_MPEG_VIDEO_MPEG2_QUANTIZATION:
-		*type = V4L2_CTRL_TYPE_MPEG2_QUANTIZATION;
+	case V4L2_CID_STATELESS_MPEG2_PICTURE:
+		*type = V4L2_CTRL_TYPE_MPEG2_PICTURE;
+		break;
+	case V4L2_CID_STATELESS_MPEG2_QUANTISATION:
+		*type = V4L2_CTRL_TYPE_MPEG2_QUANTISATION;
 		break;
 	case V4L2_CID_STATELESS_FWHT_PARAMS:
 		*type = V4L2_CTRL_TYPE_FWHT_PARAMS;
@@ -1691,7 +1707,9 @@ static bool std_equal(const struct v4l2_ctrl *ctrl, u32 idx,
 static void std_init_compound(const struct v4l2_ctrl *ctrl, u32 idx,
 			      union v4l2_ctrl_ptr ptr)
 {
-	struct v4l2_ctrl_mpeg2_slice_params *p_mpeg2_slice_params;
+	struct v4l2_ctrl_mpeg2_sequence *p_mpeg2_sequence;
+	struct v4l2_ctrl_mpeg2_picture *p_mpeg2_picture;
+	struct v4l2_ctrl_mpeg2_quantisation *p_mpeg2_quant;
 	struct v4l2_ctrl_vp8_frame *p_vp8_frame;
 	struct v4l2_ctrl_fwht_params *p_fwht_params;
 	void *p = ptr.p + idx * ctrl->elem_size;
@@ -1701,20 +1719,33 @@ static void std_init_compound(const struct v4l2_ctrl *ctrl, u32 idx,
 	else
 		memset(p, 0, ctrl->elem_size);
 
-	/*
-	 * The cast is needed to get rid of a gcc warning complaining that
-	 * V4L2_CTRL_TYPE_MPEG2_SLICE_PARAMS is not part of the
-	 * v4l2_ctrl_type enum.
-	 */
 	switch ((u32)ctrl->type) {
-	case V4L2_CTRL_TYPE_MPEG2_SLICE_PARAMS:
-		p_mpeg2_slice_params = p;
+	case V4L2_CTRL_TYPE_MPEG2_SEQUENCE:
+		p_mpeg2_sequence = p;
+
 		/* 4:2:0 */
-		p_mpeg2_slice_params->sequence.chroma_format = 1;
+		p_mpeg2_sequence->chroma_format = 1;
+		break;
+	case V4L2_CTRL_TYPE_MPEG2_PICTURE:
+		p_mpeg2_picture = p;
+
 		/* interlaced top field */
-		p_mpeg2_slice_params->picture.picture_structure = 1;
-		p_mpeg2_slice_params->picture.picture_coding_type =
-					V4L2_MPEG2_PICTURE_CODING_TYPE_I;
+		p_mpeg2_picture->picture_structure = V4L2_MPEG2_PIC_TOP_FIELD;
+		p_mpeg2_picture->picture_coding_type =
+					V4L2_MPEG2_PIC_CODING_TYPE_I;
+		break;
+	case V4L2_CTRL_TYPE_MPEG2_QUANTISATION:
+		p_mpeg2_quant = p;
+
+		memcpy(p_mpeg2_quant->intra_quantiser_matrix,
+		       mpeg2_intra_quant_matrix,
+		       ARRAY_SIZE(mpeg2_intra_quant_matrix));
+		/*
+		 * The default non-intra MPEG-2 quantisation
+		 * coefficients are all 16, as per the specification.
+		 */
+		memset(p_mpeg2_quant->non_intra_quantiser_matrix, 16,
+		       sizeof(p_mpeg2_quant->non_intra_quantiser_matrix));
 		break;
 	case V4L2_CTRL_TYPE_VP8_FRAME:
 		p_vp8_frame = p;
@@ -1842,6 +1873,15 @@ static void std_log(const struct v4l2_ctrl *ctrl)
 	case V4L2_CTRL_TYPE_HDR10_MASTERING_DISPLAY:
 		pr_cont("HDR10_MASTERING_DISPLAY");
 		break;
+	case V4L2_CTRL_TYPE_MPEG2_QUANTISATION:
+		pr_cont("MPEG2_QUANTISATION");
+		break;
+	case V4L2_CTRL_TYPE_MPEG2_SEQUENCE:
+		pr_cont("MPEG2_SEQUENCE");
+		break;
+	case V4L2_CTRL_TYPE_MPEG2_PICTURE:
+		pr_cont("MPEG2_PICTURE");
+		break;
 	default:
 		pr_cont("unknown type %d", ctrl->type);
 		break;
@@ -1883,7 +1923,8 @@ static void std_log(const struct v4l2_ctrl *ctrl)
 static int std_validate_compound(const struct v4l2_ctrl *ctrl, u32 idx,
 				 union v4l2_ctrl_ptr ptr)
 {
-	struct v4l2_ctrl_mpeg2_slice_params *p_mpeg2_slice_params;
+	struct v4l2_ctrl_mpeg2_sequence *p_mpeg2_sequence;
+	struct v4l2_ctrl_mpeg2_picture *p_mpeg2_picture;
 	struct v4l2_ctrl_vp8_frame *p_vp8_frame;
 	struct v4l2_ctrl_fwht_params *p_fwht_params;
 	struct v4l2_ctrl_h264_sps *p_h264_sps;
@@ -1900,10 +1941,10 @@ static int std_validate_compound(const struct v4l2_ctrl *ctrl, u32 idx,
 	unsigned int i;
 
 	switch ((u32)ctrl->type) {
-	case V4L2_CTRL_TYPE_MPEG2_SLICE_PARAMS:
-		p_mpeg2_slice_params = p;
+	case V4L2_CTRL_TYPE_MPEG2_SEQUENCE:
+		p_mpeg2_sequence = p;
 
-		switch (p_mpeg2_slice_params->sequence.chroma_format) {
+		switch (p_mpeg2_sequence->chroma_format) {
 		case 1: /* 4:2:0 */
 		case 2: /* 4:2:2 */
 		case 3: /* 4:4:4 */
@@ -1911,8 +1952,12 @@ static int std_validate_compound(const struct v4l2_ctrl *ctrl, u32 idx,
 		default:
 			return -EINVAL;
 		}
+		break;
 
-		switch (p_mpeg2_slice_params->picture.intra_dc_precision) {
+	case V4L2_CTRL_TYPE_MPEG2_PICTURE:
+		p_mpeg2_picture = p;
+
+		switch (p_mpeg2_picture->intra_dc_precision) {
 		case 0: /* 8 bits */
 		case 1: /* 9 bits */
 		case 2: /* 10 bits */
@@ -1922,27 +1967,27 @@ static int std_validate_compound(const struct v4l2_ctrl *ctrl, u32 idx,
 			return -EINVAL;
 		}
 
-		switch (p_mpeg2_slice_params->picture.picture_structure) {
-		case 1: /* interlaced top field */
-		case 2: /* interlaced bottom field */
-		case 3: /* progressive */
+		switch (p_mpeg2_picture->picture_structure) {
+		case V4L2_MPEG2_PIC_TOP_FIELD:
+		case V4L2_MPEG2_PIC_BOTTOM_FIELD:
+		case V4L2_MPEG2_PIC_FRAME:
 			break;
 		default:
 			return -EINVAL;
 		}
 
-		switch (p_mpeg2_slice_params->picture.picture_coding_type) {
-		case V4L2_MPEG2_PICTURE_CODING_TYPE_I:
-		case V4L2_MPEG2_PICTURE_CODING_TYPE_P:
-		case V4L2_MPEG2_PICTURE_CODING_TYPE_B:
+		switch (p_mpeg2_picture->picture_coding_type) {
+		case V4L2_MPEG2_PIC_CODING_TYPE_I:
+		case V4L2_MPEG2_PIC_CODING_TYPE_P:
+		case V4L2_MPEG2_PIC_CODING_TYPE_B:
 			break;
 		default:
 			return -EINVAL;
 		}
-
+		zero_reserved(*p_mpeg2_picture);
 		break;
 
-	case V4L2_CTRL_TYPE_MPEG2_QUANTIZATION:
+	case V4L2_CTRL_TYPE_MPEG2_QUANTISATION:
 		break;
 
 	case V4L2_CTRL_TYPE_FWHT_PARAMS:
@@ -2908,11 +2953,14 @@ static struct v4l2_ctrl *v4l2_ctrl_new(struct v4l2_ctrl_handler *hdl,
 	case V4L2_CTRL_TYPE_U32:
 		elem_size = sizeof(u32);
 		break;
-	case V4L2_CTRL_TYPE_MPEG2_SLICE_PARAMS:
-		elem_size = sizeof(struct v4l2_ctrl_mpeg2_slice_params);
+	case V4L2_CTRL_TYPE_MPEG2_SEQUENCE:
+		elem_size = sizeof(struct v4l2_ctrl_mpeg2_sequence);
 		break;
-	case V4L2_CTRL_TYPE_MPEG2_QUANTIZATION:
-		elem_size = sizeof(struct v4l2_ctrl_mpeg2_quantization);
+	case V4L2_CTRL_TYPE_MPEG2_PICTURE:
+		elem_size = sizeof(struct v4l2_ctrl_mpeg2_picture);
+		break;
+	case V4L2_CTRL_TYPE_MPEG2_QUANTISATION:
+		elem_size = sizeof(struct v4l2_ctrl_mpeg2_quantisation);
 		break;
 	case V4L2_CTRL_TYPE_FWHT_PARAMS:
 		elem_size = sizeof(struct v4l2_ctrl_fwht_params);

@@ -351,10 +351,9 @@ static void end_compressed_bio_write(struct bio *bio)
 	inode = cb->inode;
 	cb->compressed_pages[0]->mapping = cb->inode->i_mapping;
 	btrfs_record_physical_zoned(inode, cb->start, bio);
-	btrfs_writepage_endio_finish_ordered(cb->compressed_pages[0],
+	btrfs_writepage_endio_finish_ordered(BTRFS_I(inode), NULL,
 			cb->start, cb->start + cb->len - 1,
 			bio->bi_status == BLK_STS_OK);
-	cb->compressed_pages[0]->mapping = NULL;
 
 	end_compressed_writeback(inode, cb);
 	/* note, our inode could be gone now */
@@ -427,24 +426,16 @@ blk_status_t btrfs_submit_compressed_write(struct btrfs_inode *inode, u64 start,
 	bio->bi_end_io = end_compressed_bio_write;
 
 	if (use_append) {
-		struct extent_map *em;
-		struct map_lookup *map;
-		struct block_device *bdev;
+		struct btrfs_device *device;
 
-		em = btrfs_get_chunk_map(fs_info, disk_start, PAGE_SIZE);
-		if (IS_ERR(em)) {
+		device = btrfs_zoned_get_device(fs_info, disk_start, PAGE_SIZE);
+		if (IS_ERR(device)) {
 			kfree(cb);
 			bio_put(bio);
 			return BLK_STS_NOTSUPP;
 		}
 
-		map = em->map_lookup;
-		/* We only support single profile for now */
-		ASSERT(map->num_stripes == 1);
-		bdev = map->stripes[0].dev->bdev;
-
-		bio_set_dev(bio, bdev);
-		free_extent_map(em);
+		bio_set_dev(bio, device->bdev);
 	}
 
 	if (blkcg_css) {
