@@ -901,7 +901,7 @@ config ANON_VMA_NAME
 	  difference in their name.
 
 config PTE_MARKER
-	def_bool n
+	def_bool y
 	bool "Marker PTEs support"
 
 	help
