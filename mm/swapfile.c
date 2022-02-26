@@ -1847,6 +1847,7 @@ static int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 			struct vm_fault vmf = {
 				.vma = vma,
 				.address = addr,
+				.real_address = addr,
 				.pmd = pmd,
 			};
 
