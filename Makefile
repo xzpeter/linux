@@ -443,10 +443,7 @@ else
 HOSTCC	= gcc
 HOSTCXX	= g++
 endif
-<<<<<<< HEAD
-=======
 HOSTRUSTC = rustc
->>>>>>> linux-next/akpm-base
 
 KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
 			 -O2 -fomit-frame-pointer -std=gnu11 \
@@ -454,8 +451,6 @@ KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
 KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
 KBUILD_USERLDFLAGS := $(USERLDFLAGS)
 
-<<<<<<< HEAD
-=======
 # These flags apply to all Rust code in the tree, including the kernel and
 # host programs.
 export rust_common_flags := --edition=2021 \
@@ -472,7 +467,6 @@ export rust_common_flags := --edition=2021 \
 			    -Dclippy::needless_continue \
 			    -Wclippy::dbg_macro
 
->>>>>>> linux-next/akpm-base
 KBUILD_HOSTCFLAGS   := $(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS)
 KBUILD_HOSTCXXFLAGS := -Wall -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
 KBUILD_HOSTRUSTFLAGS := $(rust_common_flags) -O -Cstrip=debuginfo \
