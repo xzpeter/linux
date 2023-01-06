@@ -335,7 +335,6 @@ static void damon_hugetlb_mkold(struct hugetlb_pte *hpte, pte_t entry,
 				struct vm_area_struct *vma, unsigned long addr)
 {
 	bool referenced = false;
-	pte_t entry = huge_ptep_get(hpte->ptep);
 	struct folio *folio = pfn_folio(pte_pfn(entry));
 
 	folio_get(folio);
