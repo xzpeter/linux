@@ -6786,6 +6786,7 @@ long follow_hugetlb_page(struct mm_struct *mm, struct vm_area_struct *vma,
 				!hugetlb_pte_present_leaf(&hpte, pte)) {
 			/* We raced with someone splitting the PTE, so retry. */
 			spin_unlock(ptl);
+			hugetlb_vma_unlock_read(vma);
 			continue;
 		}
 
