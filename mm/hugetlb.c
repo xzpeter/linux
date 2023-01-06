@@ -5949,26 +5949,15 @@ static inline vm_fault_t hugetlb_handle_userfault(struct vm_area_struct *vma,
 						  unsigned long reason)
 {
 	u32 hash;
-	struct vm_fault vmf;
-
-	/*
-	 * Don't use the hpage-aligned address if the user has explicitly
-	 * enabled HGM.
-	 */
-	if (hugetlb_hgm_advised(vma) && reason == VM_UFFD_MINOR)
-		haddr = addr & PAGE_MASK;
-
-	vmf.vma = vma;
-	vmf.address = haddr;
-	vmf.real_address = addr;
-	vmf.flags = flags;
-	/*
-	 * Hard to debug if it ends up being
-	 * used by a callee that assumes
-	 * something about the other
-	 * uninitialized fields... same as in
-	 * memory.c
-	 */
+	struct vm_fault vmf = {
+		.vma = vma,
+		.real_address = addr,
+		.flags = flags,
+		/* Use small page address for HGM-minor enabled regions */
+		.address =
+		(hugetlb_hgm_advised(vma) && reason == VM_UFFD_MINOR) ?
+		(addr & PAGE_MASK) : haddr,
+	};
 
 	/*
 	 * vma_lock and hugetlb_fault_mutex must be dropped before handling
