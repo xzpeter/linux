@@ -6867,9 +6867,9 @@ long follow_hugetlb_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		 * and skip the same_page loop below.
 		 */
 		if (!pages && !vmas && !pfn_offset &&
-		    (vaddr + pages_per_hpte < vma->vm_end) &&
+		    (vaddr + hugetlb_pte_size(&hpte) < vma->vm_end) &&
 		    (remainder >= pages_per_hpte)) {
-			vaddr += pages_per_hpte;
+			vaddr += hugetlb_pte_size(&hpte);
 			remainder -= pages_per_hpte;
 			i += pages_per_hpte;
 			spin_unlock(ptl);
