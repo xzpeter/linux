@@ -1621,6 +1621,9 @@ long faultin_vma_page_range(struct vm_area_struct *vma, unsigned long start,
 	VM_BUG_ON_VMA(end > vma->vm_end, vma);
 	mmap_assert_locked(mm);
 
+	/* We'll do unconditional FOLL_UNLOCKABLE */
+	VM_WARN_ON_ONCE(!locked);
+
 	/*
 	 * FOLL_TOUCH: Mark page accessed and thereby young; will also mark
 	 *	       the page dirty with FOLL_WRITE -- which doesn't make a
@@ -1629,6 +1632,7 @@ long faultin_vma_page_range(struct vm_area_struct *vma, unsigned long start,
 	 * FOLL_HWPOISON: Return -EHWPOISON instead of -EFAULT when we hit
 	 *		  a poisoned page.
 	 * !FOLL_FORCE: Require proper access permissions.
+	 * FOLL_UNLOCKABLE: Allow the fault to unlock mmap read lock
 	 */
 	gup_flags = FOLL_TOUCH | FOLL_HWPOISON | FOLL_UNLOCKABLE;
 	if (write)
@@ -2334,10 +2338,13 @@ EXPORT_SYMBOL(get_user_pages);
 long get_user_pages_unlocked(unsigned long start, unsigned long nr_pages,
 			     struct page **pages, unsigned int gup_flags)
 {
+	unsigned int extra = FOLL_TOUCH;
 	int locked = 0;
 
-	if (!is_valid_gup_args(pages, NULL, NULL, &gup_flags,
-			       FOLL_TOUCH | FOLL_UNLOCKABLE))
+	if (!(gup_flags & FOLL_NOWAIT))
+		extra |= FOLL_UNLOCKABLE;
+
+	if (!is_valid_gup_args(pages, NULL, NULL, &gup_flags, extra))
 		return -EINVAL;
 
 	return __get_user_pages_locked(current->mm, start, nr_pages, pages,
