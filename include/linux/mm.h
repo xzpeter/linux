@@ -2360,6 +2360,44 @@ static inline void unmap_mapping_range(struct address_space *mapping,
 		loff_t const holebegin, loff_t const holelen, int even_cows) { }
 #endif
 
+static inline bool
+mm_should_release_mmap(unsigned long flags, vm_fault_t retval)
+{
+	/* The caller explicitly requested to keep the mmap read lock */
+	if (flags & FAULT_FLAG_RETRY_NOWAIT)
+		return false;
+
+	/* If the mmap read lock is already released, we're all good */
+	if (fault & (VM_FAULT_RETRY | VM_FAULT_COMPLETED))
+		return false;
+
+	/* Otherwise always release it */
+	return true;
+}
+
+/*
+ * This is mostly handle_mm_fault(), but it also take care of releasing
+ * mmap or vma read lock as long as possible (e.g. when !RETRY_NOWAIT).
+ *
+ * Normally it's the case when we got a hardware page fault, where we want
+ * to release the lock right after the page fault. And it's not for case
+ * like GUP where it can fault a range of pages continuously with mmap lock
+ * being held during the process.
+ */
+static inline vm_fault_t
+handle_mm_fault_one(struct vm_area_struct *vma, unsigned long address,
+		    unsigned int flags, struct pt_regs *regs)
+{
+	vm_fault_t retval = handle_mm_fault(vma, address, flags, regs);
+
+	if (flags & FAULT_FLAG_VMA_LOCK)
+		vma_end_read(vma);
+	else if (mm_should_release_mmap(flags, retval))
+		mmap_read_unlock(mm);
+
+	return retval;
+}
+
 static inline void unmap_shared_mapping_range(struct address_space *mapping,
 		loff_t const holebegin, loff_t const holelen)
 {

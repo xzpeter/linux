@@ -5206,10 +5206,15 @@ static vm_fault_t sanitize_fault_flags(struct vm_area_struct *vma,
 }
 
 /*
- * By the time we get here, we already hold the mm semaphore
+ * By the time we get here, we already hold relevant locks to make sure vma
+ * is rock solid:
  *
- * The mmap_lock may have been released depending on flags and our
- * return value.  See filemap_fault() and __folio_lock_or_retry().
+ *   - When FAULT_FLAG_VMA_LOCK, it's the vma read lock
+ *   - When !FAULT_FLAG_VMA_LOCK, it's the mmap read lock
+ *
+ * For the 2nd case, it's possible that the mmap_lock may have been
+ * released during the fault procedure depending on the return value.  See
+ * filemap_fault(), __folio_lock_or_retry(), or fault_dirty_shared_page().
  */
 vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 			   unsigned int flags, struct pt_regs *regs)
