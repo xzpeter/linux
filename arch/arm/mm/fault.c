@@ -256,7 +256,7 @@ __do_page_fault(struct mm_struct *mm, unsigned long addr, unsigned int flags,
 	if (!(vma->vm_flags & vma_flags))
 		return VM_FAULT_BADACCESS;
 
-	return handle_mm_fault(vma, addr & PAGE_MASK, flags, regs);
+	return handle_mm_fault_one(vma, addr & PAGE_MASK, flags, regs);
 }
 
 static int __kprobes
@@ -347,8 +347,6 @@ retry:
 			goto retry;
 		}
 	}
-
-	mmap_read_unlock(mm);
 
 	/*
 	 * Handle the "normal" case first - VM_FAULT_MAJOR

@@ -561,7 +561,7 @@ retry:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags, regs);
+	fault = handle_mm_fault_one(vma, address, flags, regs);
 
 	major |= fault & VM_FAULT_MAJOR;
 
@@ -580,8 +580,6 @@ retry:
 		flags |= FAULT_FLAG_TRIED;
 		goto retry;
 	}
-
-	mmap_read_unlock(current->mm);
 
 #ifdef CONFIG_PER_VMA_LOCK
 done:

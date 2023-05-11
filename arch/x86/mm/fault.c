@@ -1435,7 +1435,7 @@ good_area:
 	 * userland). The return to userland is identified whenever
 	 * FAULT_FLAG_USER|FAULT_FLAG_KILLABLE are both set in flags.
 	 */
-	fault = handle_mm_fault(vma, address, flags, regs);
+	fault = handle_mm_fault_one(vma, address, flags, regs);
 
 	if (fault_signal_pending(fault, regs)) {
 		/*
@@ -1463,7 +1463,6 @@ good_area:
 		goto retry;
 	}
 
-	mmap_read_unlock(mm);
 #ifdef CONFIG_PER_VMA_LOCK
 done:
 #endif
