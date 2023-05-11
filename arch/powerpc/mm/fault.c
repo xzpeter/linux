@@ -493,8 +493,7 @@ static int ___do_page_fault(struct pt_regs *regs, unsigned long address,
 		goto lock_mmap;
 	}
 
-	fault = handle_mm_fault(vma, address, flags | FAULT_FLAG_VMA_LOCK, regs);
-	vma_end_read(vma);
+	fault = handle_mm_fault_one(vma, address, flags | FAULT_FLAG_VMA_LOCK, regs);
 
 	if (!(fault & VM_FAULT_RETRY)) {
 		count_vm_vma_lock_event(VMA_LOCK_SUCCESS);
