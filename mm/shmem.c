@@ -1980,8 +1980,23 @@ repeat:
 
 	folio = filemap_get_entry(inode->i_mapping, index);
 	if (folio && vma && userfaultfd_minor(vma)) {
-		if (!xa_is_value(folio))
+		bool retry = false;
+
+		if (!xa_is_value(folio)) {
+			/*
+			 * Serialize with anyone holding the folio lock,
+			 * so we'll know whether the folio has been gone
+			 * from under us.. and whether we'd need a retry.
+			 */
+			folio_lock(folio);
+			retry = (folio->mapping != mapping);
+			folio_unlock(folio);
 			folio_put(folio);
+		}
+
+		if (unlikely(retry))
+			goto repeat;
+
 		*fault_type = handle_userfault(vmf, VM_UFFD_MINOR);
 		return 0;
 	}
