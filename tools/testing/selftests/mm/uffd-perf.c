@@ -60,6 +60,23 @@ static uint64_t run_perf(uint64_t mem_size_mb, bool poll)
 	if (uffd_test_ctx_init(0, &errmsg))
 		err("%s", errmsg);
 
+	/*
+	 * By default, uffd is opened with NONBLOCK mode; use block mode
+	 * when test read()
+	 */
+	if (!poll) {
+		int flags = fcntl(uffd, F_GETFL);
+
+		if (flags < 0)
+			err("fcntl(F_GETFL) failed");
+
+		if (flags & O_NONBLOCK)
+			flags &= ~O_NONBLOCK;
+
+		if (fcntl(uffd, F_SETFL, flags))
+			err("fcntl(F_SETFL) failed");
+	}
+
 	ret = uffd_register(uffd, area_dst, MB(mem_size_mb),
 			    true, false, false);
 	if (ret)
