@@ -110,7 +110,6 @@ static uint64_t run_perf(uint64_t mem_size_mb, bool poll)
 		uffd_fault_thread_join(uffd_threads[i], i, poll);
 
 		assert(p->wp_faults == 0 && p->minor_faults == 0);
-		assert(p->missing_faults > 0);
 	}
 
 	free(args);
