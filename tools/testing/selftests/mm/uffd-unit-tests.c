@@ -294,6 +294,32 @@ static void unpin_pages(pin_args *args)
 	args->pinned = false;
 }
 
+static pthread_t uffd_poll_thread_create(struct uffd_args *args)
+{
+	pthread_t tid;
+
+	/*
+	 * Only create one pull thread; we rely on pipefd[1] later to kick
+	 * it out; see uffd_poll_thread_destroy().
+	 */
+	assert(args->cpu == 0);
+
+	if (pthread_create(&tid, NULL, uffd_poll_thread, args))
+		err("uffd_poll_thread create");
+
+	return tid;
+}
+
+static void uffd_poll_thread_destroy(pthread_t tid)
+{
+	char c = 1;
+
+	if (write(pipefd[1], &c, sizeof(c)) != sizeof(c))
+		err("pipe write");
+	if (pthread_join(tid, NULL))
+		err("join() failed");
+}
+
 static int pagemap_test_fork(int uffd, bool with_event, bool test_pin)
 {
 	fork_event_args args = { .parent_uffd = uffd, .child_uffd = -1 };
@@ -555,7 +581,6 @@ static void uffd_minor_test_common(bool test_collapse, bool test_wp)
 {
 	unsigned long p;
 	pthread_t uffd_mon;
-	char c;
 	struct uffd_args args = { 0 };
 
 	/*
@@ -578,8 +603,7 @@ static void uffd_minor_test_common(bool test_collapse, bool test_wp)
 		       page_size);
 
 	args.apply_wp = test_wp;
-	if (pthread_create(&uffd_mon, NULL, uffd_poll_thread, &args))
-		err("uffd_poll_thread create");
+	uffd_mon = uffd_poll_thread_create(&args);
 
 	/*
 	 * Read each of the pages back using the UFFD-registered mapping. We
@@ -588,11 +612,7 @@ static void uffd_minor_test_common(bool test_collapse, bool test_wp)
 	 * page's contents, and then issuing a CONTINUE ioctl.
 	 */
 	check_memory_contents(area_dst_alias);
-
-	if (write(pipefd[1], &c, sizeof(c)) != sizeof(c))
-		err("pipe write");
-	if (pthread_join(uffd_mon, NULL))
-		err("join() failed");
+	uffd_poll_thread_destroy(uffd_mon);
 
 	if (test_collapse) {
 		if (madvise(area_dst_alias, nr_pages * page_size,
@@ -767,7 +787,6 @@ static void uffd_sigbus_test_common(bool wp)
 	pthread_t uffd_mon;
 	pid_t pid;
 	int err;
-	char c;
 	struct uffd_args args = { 0 };
 
 	fcntl(uffd, F_SETFL, uffd_flags | O_NONBLOCK);
@@ -782,8 +801,7 @@ static void uffd_sigbus_test_common(bool wp)
 	uffd_test_ops->release_pages(area_dst);
 
 	args.apply_wp = wp;
-	if (pthread_create(&uffd_mon, NULL, uffd_poll_thread, &args))
-		err("uffd_poll_thread create");
+	uffd_mon = uffd_poll_thread_create(&args);
 
 	pid = fork();
 	if (pid < 0)
@@ -795,10 +813,7 @@ static void uffd_sigbus_test_common(bool wp)
 	waitpid(pid, &err, 0);
 	if (err)
 		err("faulting process failed");
-	if (write(pipefd[1], &c, sizeof(c)) != sizeof(c))
-		err("pipe write");
-	if (pthread_join(uffd_mon, NULL))
-		err("pthread_join()");
+	uffd_poll_thread_destroy(uffd_mon);
 
 	/* Minor mode wasn't even registered, but still check all counters */
 	userfaults = args.missing_faults + args.wp_faults + args.minor_faults;
@@ -823,7 +838,6 @@ static void uffd_events_test_common(bool wp)
 	pthread_t uffd_mon;
 	pid_t pid;
 	int err;
-	char c;
 	struct uffd_args args = { 0 };
 
 	fcntl(uffd, F_SETFL, uffd_flags | O_NONBLOCK);
@@ -832,8 +846,7 @@ static void uffd_events_test_common(bool wp)
 		err("register failure");
 
 	args.apply_wp = wp;
-	if (pthread_create(&uffd_mon, NULL, uffd_poll_thread, &args))
-		err("uffd_poll_thread create");
+	uffd_mon = uffd_poll_thread_create(&args);
 
 	pid = fork();
 	if (pid < 0)
@@ -845,10 +858,7 @@ static void uffd_events_test_common(bool wp)
 	waitpid(pid, &err, 0);
 	if (err)
 		err("faulting process failed");
-	if (write(pipefd[1], &c, sizeof(c)) != sizeof(c))
-		err("pipe write");
-	if (pthread_join(uffd_mon, NULL))
-		err("pthread_join()");
+	uffd_poll_thread_destroy(uffd_mon);
 
 	if (args.missing_faults != nr_pages)
 		uffd_test_fail("Fault counts wrong");
@@ -1009,7 +1019,6 @@ static void uffd_poison_handle_fault(
 static void uffd_poison_test(uffd_test_args_t *targs)
 {
 	pthread_t uffd_mon;
-	char c;
 	struct uffd_args args = { 0 };
 	struct sigaction act = { 0 };
 	unsigned long nr_sigbus = 0;
@@ -1021,8 +1030,7 @@ static void uffd_poison_test(uffd_test_args_t *targs)
 	memset(area_src, 0, nr_pages * page_size);
 
 	args.handle_fault = uffd_poison_handle_fault;
-	if (pthread_create(&uffd_mon, NULL, uffd_poll_thread, &args))
-		err("uffd_poll_thread create");
+	uffd_mon = uffd_poll_thread_create(&args);
 
 	sigbuf = &jbuf;
 	act.sa_sigaction = sighndl;
@@ -1052,10 +1060,7 @@ static void uffd_poison_test(uffd_test_args_t *targs)
 		}
 	}
 
-	if (write(pipefd[1], &c, sizeof(c)) != sizeof(c))
-		err("pipe write");
-	if (pthread_join(uffd_mon, NULL))
-		err("pthread_join()");
+	uffd_poll_thread_destroy(uffd_mon);
 
 	if (nr_sigbus != nr_pages / 2)
 		err("expected to receive %lu SIGBUS, actually received %lu",
