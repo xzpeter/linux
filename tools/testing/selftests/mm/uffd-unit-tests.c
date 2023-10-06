@@ -797,9 +797,11 @@ static void uffd_sigbus_test_common(bool wp)
 		err("faulting process failed");
 	if (write(pipefd[1], &c, sizeof(c)) != sizeof(c))
 		err("pipe write");
-	if (pthread_join(uffd_mon, (void **)&userfaults))
+	if (pthread_join(uffd_mon, NULL))
 		err("pthread_join()");
 
+	/* Minor mode wasn't even registered, but still check all counters */
+	userfaults = args.missing_faults + args.wp_faults + args.minor_faults;
 	if (userfaults)
 		uffd_test_fail("Signal test failed, userfaults: %ld", userfaults);
 	else
