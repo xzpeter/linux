@@ -311,11 +311,11 @@ static int pagemap_test_fork(int uffd, bool with_event, bool test_pin)
 	child = fork();
 	if (!child) {
 		/* Open the pagemap fd of the child itself */
-		pin_args args = {};
+		pin_args pinargs = {};
 
 		fd = pagemap_open();
 
-		if (test_pin && pin_pages(&args, area_dst, page_size))
+		if (test_pin && pin_pages(&pinargs, area_dst, page_size))
 			/*
 			 * Normally when reach here we have pinned in
 			 * previous tests, so shouldn't fail anymore
@@ -331,7 +331,7 @@ static int pagemap_test_fork(int uffd, bool with_event, bool test_pin)
 		 */
 		pagemap_check_wp(value, with_event);
 		if (test_pin)
-			unpin_pages(&args);
+			unpin_pages(&pinargs);
 		/* Succeed */
 		exit(0);
 	}
