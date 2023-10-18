@@ -249,7 +249,8 @@ struct mem_cgroup *vmpressure_to_memcg(struct vmpressure *vmpr)
 	return container_of(vmpr, struct mem_cgroup, vmpressure);
 }
 
-#define CURRENT_OBJCG_UPDATE_FLAG 0x1UL
+#define CURRENT_OBJCG_UPDATE_BIT 0
+#define CURRENT_OBJCG_UPDATE_FLAG (1UL << CURRENT_OBJCG_UPDATE_BIT)
 
 #ifdef CONFIG_MEMCG_KMEM
 static DEFINE_SPINLOCK(objcg_lock);
@@ -3125,6 +3126,13 @@ static struct obj_cgroup *current_objcg_update(void)
 
 			old = NULL;
 		}
+
+		/*
+		 * Release the objcg pointer from the previous iteration,
+		 * if try_cmpxcg() below fails.
+		 */
+		if (unlikely(objcg))
+			obj_cgroup_put(objcg);
 
 		/* Obtain the new objcg pointer. */
 		rcu_read_lock();
@@ -6598,7 +6606,7 @@ static void mem_cgroup_kmem_attach(struct cgroup_taskset *tset)
 
 	cgroup_taskset_for_each(task, css, tset) {
 		/* atomically set the update bit */
-		set_bit(0, (unsigned long *)&task->objcg);
+		set_bit(CURRENT_OBJCG_UPDATE_BIT, (unsigned long *)&task->objcg);
 	}
 }
 #else
