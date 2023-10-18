@@ -291,7 +291,7 @@ struct mem_cgroup {
 #ifdef CONFIG_MEMCG_KMEM
 	int kmemcg_id;
 	/*
-	 * memcg->objcg is wiped out as a part of the objcg repaprenting
+	 * memcg->objcg is wiped out as a part of the objcg reparenting
 	 * process. memcg->orig_objcg preserves a pointer (and a reference)
 	 * to the original objcg until the end of live of memcg.
 	 */
