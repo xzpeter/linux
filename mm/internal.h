@@ -1012,6 +1012,12 @@ struct page *follow_trans_huge_pmd(struct vm_area_struct *vma,
 				   unsigned int flags);
 
 /*
+ * mm/huge_memory.c
+ */
+void touch_pud(struct vm_area_struct *vma, unsigned long addr,
+	       pud_t *pud, bool write);
+
+/*
  * mm/mmap.c
  */
 struct vm_area_struct *vma_merge_extend(struct vma_iterator *vmi,
