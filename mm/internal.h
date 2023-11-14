@@ -1004,18 +1004,18 @@ int migrate_device_coherent_page(struct page *page);
 struct folio *try_grab_folio(struct page *page, int refs, unsigned int flags);
 int __must_check try_grab_page(struct page *page, unsigned int flags);
 
-/*
- * mm/huge_memory.c
- */
-struct page *follow_trans_huge_pmd(struct vm_area_struct *vma,
-				   unsigned long addr, pmd_t *pmd,
-				   unsigned int flags);
+#ifdef CONFIG_PGTABLE_HAS_HUGE_LEAVES
+void touch_pmd(struct vm_area_struct *vma, unsigned long addr,
+	       pmd_t *pmd, bool write);
+#endif	/* CONFIG_PGTABLE_HAS_HUGE_LEAVES */
 
 /*
  * mm/huge_memory.c
  */
 void touch_pud(struct vm_area_struct *vma, unsigned long addr,
 	       pud_t *pud, bool write);
+void touch_pmd(struct vm_area_struct *vma, unsigned long addr,
+	       pmd_t *pmd, bool write);
 
 /*
  * mm/mmap.c
