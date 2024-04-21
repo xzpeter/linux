@@ -1082,6 +1082,9 @@ struct page *follow_page(struct vm_area_struct *vma, unsigned long address,
 	if (WARN_ON_ONCE(foll_flags & FOLL_PIN))
 		return NULL;
 
+	if (vma->vm_flags & (VM_IO | VM_PFNMAP))
+		return ERR_PTR(-EFAULT);
+
 	/*
 	 * We never set FOLL_HONOR_NUMA_FAULT because callers don't expect
 	 * to fail on PROT_NONE-mapped pages.
