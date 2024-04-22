@@ -2729,6 +2729,30 @@ static inline pte_t pte_mkspecial(pte_t pte)
 }
 #endif
 
+#if !defined(CONFIG_ARCH_HAS_PTE_SPECIAL) || !defined(CONFIG_TRANSPARENT_HUGEPAGE)
+static inline bool pmd_special(pmd_t pmd)
+{
+	return false;
+}
+
+static inline pmd_t pmd_mkspecial(pmd_t pmd)
+{
+	return pmd;
+}
+#endif
+
+#if !defined(CONFIG_ARCH_HAS_PTE_SPECIAL) || !defined(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD)
+static inline bool pud_special(pud_t pud)
+{
+	return false;
+}
+
+static inline pud_t pud_mkspecial(pud_t pud)
+{
+	return pud;
+}
+#endif
+
 #ifndef CONFIG_ARCH_HAS_PTE_DEVMAP
 static inline int pte_devmap(pte_t pte)
 {
