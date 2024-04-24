@@ -1833,7 +1833,7 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	 * here.  Flags are set to mirror the remap_pfn_range() case when
 	 * deferring to fault handling.
 	 */
-	if (!vdev->pm_runtime_engaged && __vfio_pci_memory_enabled(vdev))
+	if (0)
 		ret = remap_pfn_range(vma, vma->vm_start, pfn,
 				      req_len, vma->vm_page_prot);
 	else
