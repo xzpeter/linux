@@ -149,7 +149,6 @@ void put_pages_list(struct list_head *pages)
 			free_huge_folio(folio);
 			continue;
 		}
-		VM_BUG_ON_FOLIO(folio_memcg(folio), folio);
 		/* LRU flag must be clear because it's passed using the lru */
 		if (folio_batch_add(&fbatch, folio) > 0)
 			continue;
