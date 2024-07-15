@@ -1706,8 +1706,7 @@ static vm_fault_t vfio_pci_mmap_huge_fault(struct vm_fault *vmf, unsigned int or
 	    vmf->address + (PAGE_SIZE << order) > vma->vm_end)
 		return ret;
 
-	if (vma_to_pfn(vma, &pfn))
-		return ret;
+	pfn = vma_to_pfn(vma);
 
 	down_read(&vdev->memory_lock);
 
@@ -1820,9 +1819,7 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	 * pfn is used in the remap_pfn_range() case below and recalculated
 	 * in the fault case, so we might as well validated it here for both.
 	 */
-	ret = vma_to_pfn(vma, &pfn);
-	if (ret)
-		return ret;
+	pfn = vma_to_pfn(vma);
 
 	down_read(&vdev->memory_lock);
 
