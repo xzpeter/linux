@@ -55,7 +55,7 @@ static bool is_kvm_gmem_hugetlb(struct inode *inode)
  * @faultable. Return 0 if attributes were successfully updated or negative
  * errno on error.
  */
-static int kvm_gmem_set_faultable(struct inode *inode, pgoff_t start, pgoff_t end,
+int kvm_gmem_set_faultable(struct inode *inode, pgoff_t start, pgoff_t end,
 				  bool faultable)
 {
 	struct xarray *faultability;
@@ -92,7 +92,7 @@ static int kvm_gmem_set_faultable(struct inode *inode, pgoff_t start, pgoff_t en
 /**
  * Return true if the page at @index is allowed to be faulted in.
  */
-static bool kvm_gmem_is_faultable(struct inode *inode, pgoff_t index)
+bool kvm_gmem_is_faultable(struct inode *inode, pgoff_t index)
 {
 	struct xarray *faultability = &kvm_gmem_private(inode)->faultability;
 
@@ -103,7 +103,7 @@ static bool kvm_gmem_is_faultable(struct inode *inode, pgoff_t index)
  * Return true if any of the @nr_pages beginning at @index is allowed to be
  * faulted in.
  */
-static bool kvm_gmem_is_any_faultable(struct inode *inode, pgoff_t index,
+bool kvm_gmem_is_any_faultable(struct inode *inode, pgoff_t index,
 				      int nr_pages)
 {
 	pgoff_t i;
@@ -128,7 +128,7 @@ static inline kvm_pfn_t folio_file_pfn(struct folio *folio, pgoff_t index)
 	return folio_pfn(folio) + (index & (folio_nr_pages(folio) - 1));
 }
 
-static int __kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
+int __kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
 				    pgoff_t index, struct folio *folio)
 {
 #ifdef CONFIG_HAVE_KVM_ARCH_GMEM_PREPARE
@@ -152,7 +152,7 @@ static int __kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slo
  * This flag can be used whether the folio is prepared for PRIVATE or SHARED
  * usage.
  */
-static inline void kvm_gmem_mark_prepared(struct folio *folio)
+void kvm_gmem_mark_prepared(struct folio *folio)
 {
 	folio_mark_uptodate(folio);
 }
@@ -164,7 +164,7 @@ static inline void kvm_gmem_mark_prepared(struct folio *folio)
  * This flag can be used whether the folio is prepared for PRIVATE or SHARED
  * usage.
  */
-static inline void kvm_gmem_clear_prepared(struct folio *folio)
+void kvm_gmem_clear_prepared(struct folio *folio)
 {
 	folio_clear_uptodate(folio);
 }
@@ -175,7 +175,7 @@ static inline void kvm_gmem_clear_prepared(struct folio *folio)
  * On successful return the guest sees a zero page so as to avoid
  * leaking host data and the up-to-date flag is set.
  */
-static int kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
+int kvm_gmem_prepare_folio(struct kvm *kvm, struct kvm_memory_slot *slot,
 				  gfn_t gfn, struct folio *folio)
 {
 	pgoff_t index;
@@ -234,7 +234,7 @@ static int kvm_gmem_get_mpol_node_nodemask(gfp_t gfp_mask,
 	return policy_node_nodemask(*mpol, gfp_mask, 0, nodemask);
 }
 
-static struct folio *kvm_gmem_hugetlb_alloc_folio(struct hstate *h,
+struct folio *kvm_gmem_hugetlb_alloc_folio(struct hstate *h,
 						  struct hugepage_subpool *spool)
 {
 	bool memcg_charge_was_prepared;
@@ -298,7 +298,7 @@ err:
 	goto out;
 }
 
-static int kvm_gmem_hugetlb_filemap_add_folio(struct address_space *mapping,
+int kvm_gmem_hugetlb_filemap_add_folio(struct address_space *mapping,
 					      struct folio *folio, pgoff_t index,
 					      gfp_t gfp)
 {
@@ -329,7 +329,7 @@ static int kvm_gmem_hugetlb_filemap_add_folio(struct address_space *mapping,
 	return 0;
 }
 
-static inline void kvm_gmem_hugetlb_filemap_remove_folio(struct folio *folio)
+void kvm_gmem_hugetlb_filemap_remove_folio(struct folio *folio)
 {
 	folio_lock(folio);
 
@@ -805,7 +805,7 @@ static struct folio *kvm_gmem_get_hugetlb_folio(struct inode *inode,
  * Ignore accessed, referenced, and dirty flags.  The memory is
  * unevictable and there is no storage to write back to.
  */
-static struct folio *kvm_gmem_get_folio(struct inode *inode, pgoff_t index)
+struct folio *kvm_gmem_get_folio(struct inode *inode, pgoff_t index)
 {
 	if (is_kvm_gmem_hugetlb(inode))
 		return kvm_gmem_get_hugetlb_folio(inode, index);
@@ -1247,7 +1247,7 @@ static void kvm_gmem_init_mount(void)
 	kvm_gmem_mnt->mnt_flags |= MNT_NOEXEC;
 }
 
-static vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
+vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
 {
 	struct inode *inode;
 	struct folio *folio;
@@ -1530,7 +1530,7 @@ static struct file *kvm_gmem_inode_create_getfile(void *priv, loff_t size,
 	return file;
 }
 
-static void kvm_gmem_set_default_faultability_by_vm_type(struct inode *inode,
+void kvm_gmem_set_default_faultability_by_vm_type(struct inode *inode,
 							 u8 vm_type,
 							 loff_t start, loff_t end)
 {
