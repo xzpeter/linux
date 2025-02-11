@@ -214,6 +214,7 @@ struct mempolicy *get_task_policy(struct task_struct *p)
 
 	return &default_policy;
 }
+EXPORT_SYMBOL(get_task_policy);
 
 static const struct mempolicy_operations {
 	int (*create)(struct mempolicy *pol, const nodemask_t *nodes);
@@ -347,6 +348,7 @@ void __mpol_put(struct mempolicy *pol)
 		return;
 	kmem_cache_free(policy_cache, pol);
 }
+EXPORT_SYMBOL(__mpol_put);
 
 static void mpol_rebind_default(struct mempolicy *pol, const nodemask_t *nodes)
 {
@@ -2104,6 +2106,7 @@ int policy_node_nodemask(struct mempolicy *mpol, gfp_t gfp_flags,
 	*nodemask = policy_nodemask(gfp_flags, mpol, ilx, &nid);
 	return nid;
 }
+EXPORT_SYMBOL(policy_node_nodemask);
 
 #ifdef CONFIG_HUGETLBFS
 /*

@@ -51,7 +51,9 @@
 
 int hugetlb_max_hstate __read_mostly;
 unsigned int default_hstate_idx;
+EXPORT_SYMBOL(default_hstate_idx);
 struct hstate hstates[HUGE_MAX_HSTATE];
+EXPORT_SYMBOL(hstates);
 
 #ifdef CONFIG_CMA
 static struct cma *hugetlb_cma[MAX_NUMNODES];
@@ -90,6 +92,7 @@ DEFINE_SPINLOCK(hugetlb_lock);
  */
 static int num_fault_mutexes;
 struct mutex *hugetlb_fault_mutex_table ____cacheline_aligned_in_smp;
+EXPORT_SYMBOL(hugetlb_fault_mutex_table);
 
 /* Forward declaration */
 static int __hugetlb_acct_memory(struct hstate *h, long delta, bool use_surplus);
@@ -153,6 +156,7 @@ struct hugepage_subpool *hugepage_new_subpool(struct hstate *h, long max_hpages,
 
 	return spool;
 }
+EXPORT_SYMBOL(hugepage_new_subpool);
 
 void hugepage_put_subpool(struct hugepage_subpool *spool)
 {
@@ -163,6 +167,7 @@ void hugepage_put_subpool(struct hugepage_subpool *spool)
 	spool->count--;
 	unlock_or_release_subpool(spool, flags);
 }
+EXPORT_SYMBOL(hugepage_put_subpool);
 
 /*
  * Subpool accounting for allocating and reserving pages.
@@ -209,6 +214,7 @@ unlock_ret:
 	spin_unlock_irq(&spool->lock);
 	return ret;
 }
+EXPORT_SYMBOL(hugepage_subpool_get_pages);
 
 /*
  * Subpool accounting for freeing and unreserving pages.
@@ -249,6 +255,7 @@ long hugepage_subpool_put_pages(struct hugepage_subpool *spool, long delta)
 
 	return ret;
 }
+EXPORT_SYMBOL(hugepage_subpool_put_pages);
 
 static inline struct hugepage_subpool *subpool_inode(struct inode *inode)
 {
@@ -1537,6 +1544,7 @@ void destroy_compound_gigantic_folio(struct folio *folio, unsigned int order)
 {
 	__destroy_compound_gigantic_folio(folio, order, false);
 }
+EXPORT_SYMBOL(destroy_compound_gigantic_folio);
 
 static void free_gigantic_folio(struct folio *folio, unsigned int order)
 {
@@ -1918,6 +1926,7 @@ struct hstate *size_to_hstate(unsigned long size)
 	}
 	return NULL;
 }
+EXPORT_SYMBOL(size_to_hstate);
 
 void free_huge_folio(struct folio *folio)
 {
@@ -2121,6 +2130,7 @@ bool prep_compound_gigantic_folio(struct folio *folio, unsigned int order)
 {
 	return __prep_compound_gigantic_folio(folio, order, false);
 }
+EXPORT_SYMBOL(prep_compound_gigantic_folio);
 
 static bool prep_compound_gigantic_folio_for_demote(struct folio *folio,
 							unsigned int order)
@@ -3200,6 +3210,7 @@ err_uncharge_cgroup_reservation:
 
 	return NULL;
 }
+EXPORT_SYMBOL(hugetlb_alloc_folio);
 
 struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
 				    unsigned long addr, int avoid_reserve)
@@ -5191,6 +5202,7 @@ int hugetlb_acct_memory(struct hstate *h, long delta)
 {
 	return __hugetlb_acct_memory(h, delta, true);
 }
+EXPORT_SYMBOL(hugetlb_acct_memory);
 
 static void hugetlb_vm_op_open(struct vm_area_struct *vma)
 {
@@ -6468,6 +6480,7 @@ u32 hugetlb_fault_mutex_hash(struct address_space *mapping, pgoff_t idx)
 	return 0;
 }
 #endif
+EXPORT_SYMBOL(hugetlb_fault_mutex_hash);
 
 vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 			unsigned long address, unsigned int flags)
@@ -7270,6 +7283,7 @@ void hugetlb_folio_list_add(struct folio *folio, struct list_head *list)
 	list_add(&folio->lru, list);
 	spin_unlock_irq(&hugetlb_lock);
 }
+EXPORT_SYMBOL(hugetlb_folio_list_add);
 
 void hugetlb_folio_list_move(struct folio *folio, struct list_head *list)
 {
@@ -7284,6 +7298,7 @@ void hugetlb_folio_list_del(struct folio *folio)
 	list_del(&folio->lru);
 	spin_unlock_irq(&hugetlb_lock);
 }
+EXPORT_SYMBOL(hugetlb_folio_list_del);
 
 #ifdef CONFIG_ARCH_WANT_HUGE_PMD_SHARE
 static unsigned long page_table_shareable(struct vm_area_struct *svma,

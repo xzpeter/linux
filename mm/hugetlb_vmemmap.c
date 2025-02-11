@@ -497,6 +497,7 @@ int hugetlb_vmemmap_restore_folio(const struct hstate *h, struct folio *folio)
 
 	return __hugetlb_vmemmap_restore_folio(h, folio, 0);
 }
+EXPORT_SYMBOL(hugetlb_vmemmap_restore_folio);
 
 /**
  * hugetlb_vmemmap_restore_folios - restore vmemmap for every folio on the list.
@@ -626,6 +627,7 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
 	__hugetlb_vmemmap_optimize_folio(h, folio, &vmemmap_pages, 0);
 	free_vmemmap_page_list(&vmemmap_pages);
 }
+EXPORT_SYMBOL(hugetlb_vmemmap_optimize_folio);
 
 static int hugetlb_vmemmap_split_folio(const struct hstate *h, struct folio *folio)
 {

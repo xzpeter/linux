@@ -269,6 +269,7 @@ void filemap_remove_folio(struct folio *folio)
 
 	filemap_free_folio(mapping, folio);
 }
+EXPORT_SYMBOL(filemap_remove_folio);
 
 /*
  * page_cache_delete_batch - delete several folios from page cache
@@ -954,6 +955,7 @@ error:
 	folio_put_refs(folio, nr);
 	return xas_error(&xas);
 }
+EXPORT_SYMBOL(__filemap_add_folio);
 ALLOW_ERROR_INJECTION(__filemap_add_folio, ERRNO);
 
 int filemap_add_folio(struct address_space *mapping, struct folio *folio,

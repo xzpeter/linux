@@ -969,6 +969,7 @@ again:
 	rcu_read_unlock();
 	return memcg;
 }
+EXPORT_SYMBOL(get_mem_cgroup_from_current);
 
 /**
  * mem_cgroup_iter - iterate over memory cgroup hierarchy
@@ -2363,6 +2364,7 @@ void mem_cgroup_cancel_charge(struct mem_cgroup *memcg, unsigned int nr_pages)
 	if (do_memsw_account())
 		page_counter_uncharge(&memcg->memsw, nr_pages);
 }
+EXPORT_SYMBOL(mem_cgroup_cancel_charge);
 
 static void commit_charge(struct folio *folio, struct mem_cgroup *memcg)
 {
@@ -2394,6 +2396,7 @@ void mem_cgroup_commit_charge(struct folio *folio, struct mem_cgroup *memcg)
 	memcg1_check_events(memcg, folio_nid(folio));
 	local_irq_enable();
 }
+EXPORT_SYMBOL(mem_cgroup_commit_charge);
 
 static inline void __mod_objcg_mlstate(struct obj_cgroup *objcg,
 				       struct pglist_data *pgdat,
@@ -4473,6 +4476,7 @@ int mem_cgroup_hugetlb_try_charge(struct mem_cgroup *memcg, gfp_t gfp,
 
 	return 0;
 }
+EXPORT_SYMBOL(mem_cgroup_hugetlb_try_charge);
 
 /**
  * mem_cgroup_swapin_charge_folio - Charge a newly allocated folio for swapin.
