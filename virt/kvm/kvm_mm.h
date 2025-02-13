@@ -44,6 +44,14 @@ void kvm_gmem_unbind(struct kvm_memory_slot *slot);
 int kvm_gmem_should_set_attributes(struct kvm *kvm, gfn_t start, gfn_t end,
 				   unsigned long attrs);
 void kvm_gmem_clear_prepared_vm(struct kvm *kvm, gfn_t start, gfn_t end);
+
+/* Is this guest-memfd working in shared mode? */
+static inline bool kvm_gmem_is_shared(struct inode *inode)
+{
+	u64 flags = (u64)inode->i_private;
+
+	return flags & KVM_GUEST_MEMFD_SHARED;
+}
 #else
 static inline void kvm_gmem_init(struct module *module)
 {

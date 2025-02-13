@@ -934,6 +934,7 @@ struct kvm_enable_cap {
 #define KVM_CAP_PRE_FAULT_MEMORY 236
 #define KVM_CAP_X86_APIC_BUS_CYCLES_NS 237
 #define KVM_CAP_X86_GUEST_MODE 238
+#define KVM_CAP_GUEST_MEMFD_SHARED 239
 
 struct kvm_irq_routing_irqchip {
 	__u32 irqchip;
@@ -1560,6 +1561,7 @@ struct kvm_memory_attributes {
 #define KVM_CREATE_GUEST_MEMFD	_IOWR(KVMIO,  0xd4, struct kvm_create_guest_memfd)
 
 #define KVM_GUEST_MEMFD_HUGETLB (1ULL << 1)
+#define KVM_GUEST_MEMFD_SHARED  (1ULL << 2)
 
 /*
  * Huge page size encoding when KVM_GUEST_MEMFD_HUGETLB is specified, and a huge
