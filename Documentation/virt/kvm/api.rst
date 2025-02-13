@@ -6360,10 +6360,21 @@ migration of a virtual machine.
 KVM currently only supports mapping guest_memfd via KVM_SET_USER_MEMORY_REGION2,
 and more specifically via the guest_memfd and guest_memfd_offset fields in
 "struct kvm_userspace_memory_region2", where guest_memfd_offset is the offset
-into the guest_memfd instance.  For a given guest_memfd file, there can be at
-most one mapping per page, i.e. binding multiple memory regions to a single
-guest_memfd range is not allowed (any number of memory regions can be bound to
-a single guest_memfd file, but the bound ranges must not overlap).
+into the guest_memfd instance.  For a given guest_memfd file, by default
+there can be at most one mapping per page, i.e. binding multiple memory
+regions to a single guest_memfd range is not allowed (any number of memory
+regions can be bound to a single guest_memfd file, but the bound ranges
+must not overlap).
+
+The ioctl supports flags to specify the attributes of guest-memfd.
+
+When flag KVM_GUEST_MEMFD_SHARED is specified, the guest-memfd will be used
+in a shared fashion just like a shared anonymous memfd.  The only exception
+is that all the page caches will be managed by guest-memfd core.  In the
+shared mode, guest-memfd does not require 1:1 mapping between a specific
+guest-memfd range and kvm memory regions, and it also does not involve any
+kvm binding operations.  Unlike normal guest-memfd which can contain
+private pages, it only contain shared pages, and they're always faultable.
 
 See KVM_SET_USER_MEMORY_REGION2 for additional details.
 

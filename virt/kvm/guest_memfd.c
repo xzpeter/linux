@@ -821,6 +821,10 @@ static void kvm_gmem_invalidate_begin(struct kvm_gmem *gmem, pgoff_t start,
 	struct kvm *kvm = gmem->kvm;
 	unsigned long index;
 
+	/* Shared mode guest-memfd relies on HVA ranges like before */
+	if (!kvm)
+		return;
+
 	xa_for_each_range(&gmem->bindings, index, slot, start, end - 1) {
 		pgoff_t pgoff = slot->gmem.pgoff;
 
@@ -852,6 +856,10 @@ static void kvm_gmem_invalidate_end(struct kvm_gmem *gmem, pgoff_t start,
 				    pgoff_t end)
 {
 	struct kvm *kvm = gmem->kvm;
+
+	/* Shared mode guest-memfd relies on HVA ranges like before */
+	if (!kvm)
+		return;
 
 	if (xa_find(&gmem->bindings, &start, end - 1, XA_PRESENT)) {
 		KVM_MMU_LOCK(kvm);
@@ -1131,6 +1139,9 @@ static int kvm_gmem_release(struct inode *inode, struct file *file)
 	struct kvm *kvm = gmem->kvm;
 	unsigned long index;
 
+	if (!kvm)
+		goto out;
+
 	/*
 	 * Prevent concurrent attempts to *unbind* a memslot.  This is the last
 	 * reference to the file and thus no new bindings can be created, but
@@ -1155,16 +1166,15 @@ static int kvm_gmem_release(struct inode *inode, struct file *file)
 	kvm_gmem_invalidate_begin(gmem, 0, -1ul);
 	kvm_gmem_invalidate_end(gmem, 0, -1ul);
 
-	list_del(&gmem->entry);
-
 	filemap_invalidate_unlock(inode->i_mapping);
 
 	mutex_unlock(&kvm->slots_lock);
 
+	kvm_put_kvm(kvm);
+out:
+	list_del(&gmem->entry);
 	xa_destroy(&gmem->bindings);
 	kfree(gmem);
-
-	kvm_put_kvm(kvm);
 
 	return 0;
 }
@@ -1261,7 +1271,9 @@ vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
 	 */
 	filemap_invalidate_lock_shared(inode->i_mapping);
 
-	if (!kvm_gmem_is_faultable(inode, vmf->pgoff)) {
+	/* Shared mode guest-memfd always allows faults */
+	if (!kvm_gmem_is_shared(inode) &&
+	    !kvm_gmem_is_faultable(inode, vmf->pgoff)) {
 		filemap_invalidate_unlock_shared(inode->i_mapping);
 		return VM_FAULT_SIGBUS;
 	}
@@ -1569,8 +1581,25 @@ static int __kvm_gmem_create(struct kvm *kvm, loff_t size, u64 flags)
 		goto err_gmem;
 	}
 
-	kvm_get_kvm(kvm);
-	gmem->kvm = kvm;
+	/*
+	 * When the guest-memfd is used in shared mode, do not attach
+	 * guest-memfd to kvm instance.  It'll make the guest-memfd more
+	 * flexible (e.g. being able to be passed around), and this is also
+	 * easier to do sanity check, because SHARED mode shouldn't need
+	 * KVM bindings too (so any kvm pointer check would fail properly).
+	 */
+	if (!(flags & KVM_GUEST_MEMFD_SHARED)) {
+		kvm_get_kvm(kvm);
+		gmem->kvm = kvm;
+	}
+
+	/*
+	 * For shared guest-memfd, bindings are always empty and unused.
+	 * Keep it around for simplicity, so that all the loops will be
+	 * no-op.  It could make some sense too because shared mode
+	 * guest-memfd always tracks mapping changes via mmu notifiers, so
+	 * nothing to do from internal binding POV.
+	 */
 	xa_init(&gmem->bindings);
 	list_add(&gmem->entry, &file_inode(file)->i_mapping->i_private_list);
 
@@ -1591,7 +1620,7 @@ static inline bool kvm_gmem_hugetlb_page_aligned(u32 flags, u64 value)
 	return IS_ALIGNED(value, page_size);
 }
 
-#define KVM_GUEST_MEMFD_ALL_FLAGS KVM_GUEST_MEMFD_HUGETLB
+#define KVM_GUEST_MEMFD_ALL_FLAGS (KVM_GUEST_MEMFD_HUGETLB | KVM_GUEST_MEMFD_SHARED)
 
 int kvm_gmem_create(struct kvm *kvm, struct kvm_create_guest_memfd *args)
 {
@@ -1640,7 +1669,11 @@ int kvm_gmem_bind(struct kvm *kvm, struct kvm_memory_slot *slot,
 		goto err;
 
 	gmem = file->private_data;
-	if (gmem->kvm != kvm)
+	/*
+	 * For share-mode guest-memfds, it never allows binding as
+	 * gmem->kvm==NULL.
+	 */
+	if (!gmem->kvm || gmem->kvm != kvm)
 		goto err;
 
 	inode = file_inode(file);
