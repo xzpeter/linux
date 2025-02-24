@@ -120,3 +120,26 @@ config HAVE_KVM_ARCH_GMEM_PREPARE
 config HAVE_KVM_ARCH_GMEM_INVALIDATE
        bool
        depends on KVM_PRIVATE_MEM
+
+config KVM_GUEST_MEMFD_SHARED_HUGE
+       def_bool y
+
+       # So far both are needed:
+       #
+       # (1) THP required to make sure THP helpers available, can be
+       #     removed after we decouple the helpers from THP
+       #
+       # (2) HUGETLB_PAGE required to have hugetlb management available.
+       #     Currently guest-memfd relies on hugetlb for folio allocations.
+       #
+       depends on TRANSPARENT_HUGEPAGE && HUGETLB_PAGE
+
+       # KVM_CREATE_GUEST_MEMFD ioctl being available
+       depends on KVM_PRIVATE_MEM
+
+config KVM_GUEST_MEMFD_SHARED_HUGE_PMD
+       def_bool KVM_GUEST_MEMFD_SHARED_HUGE
+
+config KVM_GUEST_MEMFD_SHARED_HUGE_PUD
+       def_bool y
+       depends on KVM_GUEST_MEMFD_SHARED_HUGE && HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD

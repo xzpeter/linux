@@ -1279,7 +1279,7 @@ static void kvm_gmem_init_mount(void)
 	kvm_gmem_mnt->mnt_flags |= MNT_NOEXEC;
 }
 
-vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
+static struct folio *__kvm_gmem_fault(struct vm_fault *vmf)
 {
 	struct inode *inode;
 	struct folio *folio;
@@ -1297,7 +1297,7 @@ vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
 	if (!kvm_gmem_is_shared(inode) &&
 	    !kvm_gmem_is_faultable(inode, vmf->pgoff)) {
 		filemap_invalidate_unlock_shared(inode->i_mapping);
-		return VM_FAULT_SIGBUS;
+		return NULL;
 	}
 
 	folio = kvm_gmem_get_folio(inode, vmf->pgoff);
@@ -1305,9 +1305,7 @@ vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
 	filemap_invalidate_unlock_shared(inode->i_mapping);
 
 	if (!folio)
-		return VM_FAULT_SIGBUS;
-
-	WARN(folio_test_hugetlb(folio), "should not be faulting in hugetlb folio=%p\n", folio);
+		return NULL;
 
 	is_prepared = folio_test_uptodate(folio);
 	if (!is_prepared) {
@@ -1334,12 +1332,101 @@ vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
 		kvm_gmem_mark_prepared(folio);
 	}
 
+	return folio;
+}
+
+vm_fault_t kvm_gmem_fault(struct vm_fault *vmf)
+{
+	struct inode *inode = file_inode(vmf->vma->vm_file);
+	struct folio *folio;
+
+	/*
+	 * For now, hugetlb based guest-memfd shouldn't use the normal
+	 * fault() yet or it is seen as a bug.  Only huge_fault() is
+	 * supported on aligned PMDs or PUDs.
+	 *
+	 * TODO: support cont-pte hugetlb pages.
+	 */
+	if (WARN_ON_ONCE(is_kvm_gmem_hugetlb(inode)))
+		return VM_FAULT_SIGBUS;
+
+	folio = __kvm_gmem_fault(vmf);
+
+	if (!folio)
+		return VM_FAULT_SIGBUS;
+
 	vmf->page = folio_file_page(folio, vmf->pgoff);
+
 	return VM_FAULT_LOCKED;
 }
 
+#ifdef CONFIG_KVM_GUEST_MEMFD_SHARED_HUGE
+vm_fault_t kvm_gmem_huge_fault(struct vm_fault *vmf, unsigned int order)
+{
+	struct inode *inode = file_inode(vmf->vma->vm_file);
+	vm_fault_t ret = VM_FAULT_FALLBACK;
+	unsigned int nr_pages;
+	struct folio *folio;
+	struct hstate *h;
+
+	if (!is_kvm_gmem_hugetlb(inode))
+		return VM_FAULT_FALLBACK;
+
+	folio = __kvm_gmem_fault(vmf);
+	if (!folio)
+		return VM_FAULT_SIGBUS;
+
+	nr_pages = folio_nr_pages(folio);
+
+	/* TODO: support cont-pmd/cont-pud sizes */
+	if (nr_pages != (1UL << order))
+		return VM_FAULT_FALLBACK;
+
+	h = kvm_gmem_hgmem(inode)->h;
+
+	switch (order) {
+	case PMD_ORDER:
+		ret = vmf_insert_pmd(vmf, folio);
+		break;
+#ifdef CONFIG_KVM_GUEST_MEMFD_SHARED_HUGE_PUD
+	case PUD_ORDER:
+		ret = vmf_insert_pud(vmf, folio);
+		break;
+#endif
+	default:
+		WARN_ON_ONCE(1);
+		break;
+	}
+
+	folio_unlock(folio);
+
+	/*
+	 * ret != 0 implies the folio is not injected into pgtable, when it
+	 * happens we need to manually return the refcount.
+	 */
+	if (ret)
+		folio_put(folio);
+
+	return ret;
+}
+
+unsigned long kvm_gmem_get_supported_orders(struct vm_area_struct *vma)
+{
+	struct inode *inode = file_inode(vma->vm_file);
+
+	if (!is_kvm_gmem_hugetlb(inode))
+		return 0;
+
+	return kvm_gmem_hgmem(inode)->h->order;
+}
+#endif
+
 static const struct vm_operations_struct kvm_gmem_vm_ops = {
 	.fault = kvm_gmem_fault,
+#ifdef CONFIG_KVM_GUEST_MEMFD_SHARED_HUGE
+	.huge_fault = kvm_gmem_huge_fault,
+	.get_supported_orders = kvm_gmem_get_supported_orders,
+#endif
 };
 
 static bool kvm_gmem_mmap_check_align(struct file *file,
