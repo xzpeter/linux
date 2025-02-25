@@ -1320,12 +1320,40 @@ static const struct vm_operations_struct kvm_gmem_vm_ops = {
 	.fault = kvm_gmem_fault,
 };
 
+static bool kvm_gmem_mmap_check_align(struct file *file,
+				      struct vm_area_struct *vma)
+{
+	struct inode *inode = file_inode(file);
+	uint64_t addr_mask = (PAGE_SIZE - 1);
+	struct hstate *h;
+
+	if (is_kvm_gmem_hugetlb(inode)) {
+		h = kvm_gmem_hgmem(inode)->h;
+		addr_mask = huge_page_size(h) - 1;
+	}
+
+	/* All these fields must be aligned to page size.. */
+	if (vma->vm_start & addr_mask)
+		return false;
+
+	if (vma->vm_end & addr_mask)
+		return false;
+
+	if (vma->vm_pgoff & addr_mask)
+		return false;
+
+	return true;
+}
+
 static int kvm_gmem_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	if ((vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) !=
 	    (VM_SHARED | VM_MAYSHARE)) {
 		return -EINVAL;
 	}
+
+	if (!kvm_gmem_mmap_check_align(file, vma))
+		return -EINVAL;
 
 	file_accessed(file);
 	vm_flags_set(vma, VM_DONTDUMP);
