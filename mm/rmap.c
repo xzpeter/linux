@@ -1181,6 +1181,10 @@ static __always_inline unsigned int __folio_add_rmap(struct folio *folio,
 		}
 		atomic_inc(&folio->_large_mapcount);
 		break;
+	case RMAP_LEVEL_PUD:
+		atomic_inc(&folio->_entire_mapcount);
+		atomic_inc(&folio->_large_mapcount);
+		break;
 	}
 	return nr;
 }
@@ -1314,6 +1318,10 @@ static __always_inline void __folio_add_anon_rmap(struct folio *folio,
 			break;
 		case RMAP_LEVEL_PMD:
 			SetPageAnonExclusive(page);
+			break;
+		default:
+			/* Anon 1G doesn't exist yet! */
+			VM_BUG_ON(1);
 			break;
 		}
 	}
@@ -1554,6 +1562,10 @@ static __always_inline void __folio_remove_rmap(struct folio *folio,
 		}
 
 		partially_mapped = nr < nr_pmdmapped;
+		break;
+	case RMAP_LEVEL_PUD:
+		atomic_dec(&folio->_large_mapcount);
+		atomic_dec(&folio->_entire_mapcount);
 		break;
 	}
 
