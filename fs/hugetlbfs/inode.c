@@ -1153,9 +1153,11 @@ static int hugetlbfs_show_options(struct seq_file *m, struct dentry *root)
 		if (spool->max_hpages != -1)
 			seq_printf(m, ",size=%llu",
 				   (unsigned long long)spool->max_hpages << hpage_shift);
-		if (spool->min_hpages != -1)
-			seq_printf(m, ",min_size=%llu",
-				   (unsigned long long)spool->min_hpages << hpage_shift);
+		if (spool->min_hpages != -1) {
+			seq_printf(m, ",min_size=%llu,resv_size=%llu",
+				   (unsigned long long)spool->min_hpages << hpage_shift,
+				   (unsigned long long)spool->rsv_hpages << hpage_shift);
+		}
 	}
 	return 0;
 }
