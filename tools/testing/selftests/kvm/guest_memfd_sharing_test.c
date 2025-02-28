@@ -28,6 +28,8 @@ typedef enum {
 	MEM_TYPE_IN_PLACE,
 	/* Using completely shared guest-memfd */
 	MEM_TYPE_SHARED_FULL,
+	/* Using completely shared guest-memfd with 2M hugetlb */
+	MEM_TYPE_SHARED_FULL_2M,
 } mem_type;
 
 static void guest_code(int page_size)
@@ -87,6 +89,7 @@ void *add_memslot(struct kvm_vm *vm, int guest_memfd, size_t page_size,
 	switch (mem_type) {
 	case MEM_TYPE_IN_PLACE:
 	case MEM_TYPE_SHARED_FULL:
+	case MEM_TYPE_SHARED_FULL_2M:
 		mem = mmap(NULL, page_size, PROT_READ | PROT_WRITE, MAP_SHARED,
 			   guest_memfd, GUEST_MEMFD_SHARING_TEST_OFFSET);
 		break;
@@ -123,22 +126,28 @@ void test_sharing(mem_type mem_type)
 	struct vm_shape shape = {
 		.mode = VM_MODE_DEFAULT,
 	};
-	uint64_t gmemfd_flags;
+	uint64_t gmemfd_flags = 0;
 	struct kvm_vcpu *vcpu;
 	struct kvm_vm *vm;
 	size_t page_size;
 	int guest_memfd;
 	void *mem;
 
+	page_size = getpagesize();
+
 	switch (mem_type) {
 	case MEM_TYPE_ANON:
 	case MEM_TYPE_IN_PLACE:
 		shape.type = KVM_X86_SW_PROTECTED_VM;
-		gmemfd_flags = 0;
 		break;
+	case MEM_TYPE_SHARED_FULL_2M:
+		page_size = (2UL << 20);
+		gmemfd_flags |=
+		    KVM_GUEST_MEMFD_HUGETLB | KVM_GUEST_MEMFD_HUGE_2MB;
+		/* fallthrough */
 	case MEM_TYPE_SHARED_FULL:
 		shape.type = KVM_X86_DEFAULT_VM;
-		gmemfd_flags = KVM_GUEST_MEMFD_SHARED;
+		gmemfd_flags |= KVM_GUEST_MEMFD_SHARED;
 		break;
 	default:
 		abort();
@@ -148,13 +157,12 @@ void test_sharing(mem_type mem_type)
 
 	vm = vm_create_shape_with_one_vcpu(shape, &vcpu, &guest_code);
 
-	page_size = getpagesize();
-
 	guest_memfd = vm_create_guest_memfd(vm, page_size, gmemfd_flags);
 
 	mem = add_memslot(vm, guest_memfd, page_size, mem_type);
 
-	virt_map(vm, GUEST_MEMFD_SHARING_TEST_GVA, GUEST_MEMFD_SHARING_TEST_GPA, 1);
+	virt_map(vm, GUEST_MEMFD_SHARING_TEST_GVA, GUEST_MEMFD_SHARING_TEST_GPA,
+		 page_size / getpagesize());
 
 	run_test(vcpu, mem, page_size);
 
@@ -200,6 +208,7 @@ int main(int argc, char *argv[])
 	 * It should also work when using fully shared guest-memfd mode.
 	 */
 	test_sharing(MEM_TYPE_SHARED_FULL);
+	test_sharing(MEM_TYPE_SHARED_FULL_2M);
 
 	return 0;
 }
