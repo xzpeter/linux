@@ -4695,17 +4695,14 @@ static void deposit_prealloc_pte(struct vm_fault *vmf)
 	vmf->prealloc_pte = NULL;
 }
 
-vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
+vm_fault_t vmf_insert_pmd(struct vm_fault *vmf, struct folio *folio)
 {
-	struct folio *folio = page_folio(page);
 	struct vm_area_struct *vma = vmf->vma;
 	bool write = vmf->flags & FAULT_FLAG_WRITE;
 	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
-	pmd_t entry;
 	vm_fault_t ret = VM_FAULT_FALLBACK;
-
-	if (!thp_vma_suitable_order(vma, haddr, PMD_ORDER))
-		return ret;
+	struct page *page;
+	pmd_t entry;
 
 	if (folio_order(folio) != HPAGE_PMD_ORDER)
 		return ret;
@@ -4755,9 +4752,27 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 
 	/* fault is handled */
 	ret = 0;
-	count_vm_event(THP_FILE_MAPPED);
 out:
 	spin_unlock(vmf->ptl);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vmf_insert_pmd);
+
+vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
+{
+	unsigned long haddr = vmf->address & HPAGE_PMD_MASK;
+	struct vm_area_struct *vma = vmf->vma;
+	vm_fault_t ret = VM_FAULT_FALLBACK;
+
+	if (!thp_vma_suitable_order(vma, haddr, PMD_ORDER))
+		return ret;
+
+	/* NOTE: page can be a tail */
+	ret = vmf_insert_pmd(vmf, page_folio(page));
+
+	if (ret == 0)
+		count_vm_event(THP_FILE_MAPPED);
+
 	return ret;
 }
 #else
