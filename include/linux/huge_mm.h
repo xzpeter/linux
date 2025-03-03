@@ -611,6 +611,13 @@ static inline int change_huge_pud(struct mmu_gather *tlb,
 }
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
+static inline bool vma_fault_order_allowed(struct vm_area_struct *vma,
+					   unsigned long order)
+{
+	return thp_vma_allowable_order(vma, vma->vm_flags,
+				       TVA_IN_PF | TVA_ENFORCE_SYSFS, order);
+}
+
 static inline int split_folio_to_list_to_order(struct folio *folio,
 		struct list_head *list, int new_order)
 {
