@@ -653,7 +653,25 @@ struct vm_operations_struct {
 	 */
 	struct page *(*find_special_page)(struct vm_area_struct *vma,
 					  unsigned long addr);
+	/*
+	 * When set, return the allowed orders bitmask in faults of mmap()
+	 * ranges (e.g. for follow up huge_fault() processing).  Drivers
+	 * can use this to bypass THP setups for specific types of VMAs.
+	 */
+	unsigned long (*get_supported_orders)(struct vm_area_struct *vma);
 };
+
+static inline bool vma_has_supported_orders(struct vm_area_struct *vma)
+{
+	return vma->vm_ops && vma->vm_ops->get_supported_orders;
+}
+
+static inline unsigned long vma_get_supported_orders(struct vm_area_struct *vma)
+{
+	if (!vma_has_supported_orders(vma))
+		return 0;
+	return vma->vm_ops->get_supported_orders(vma);
+}
 
 #ifdef CONFIG_NUMA_BALANCING
 static inline void vma_numab_state_init(struct vm_area_struct *vma)
