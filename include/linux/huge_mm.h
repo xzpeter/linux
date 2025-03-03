@@ -590,6 +590,9 @@ static inline int next_order(unsigned long *orders, int prev)
 static inline bool vma_fault_order_allowed(struct vm_area_struct *vma,
 					   unsigned long order)
 {
+	if (vma_has_supported_orders(vma))
+		return !!(vma_get_supported_orders(vma) & order);
+
 	return thp_vma_allowable_order(vma, vma->vm_flags,
 				       TVA_IN_PF | TVA_ENFORCE_SYSFS, order);
 }
