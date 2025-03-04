@@ -2388,11 +2388,44 @@ spinlock_t *__pud_trans_huge_lock(pud_t *pud, struct vm_area_struct *vma)
 }
 
 #ifdef CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
+/*
+ * Zap the PUD file entry, do accounting jobs (rmap, etc.) and return the
+ * folio.  The caller is responsible to free the refcount attached to the
+ * pud entry.
+ */
+static struct folio * __zap_huge_file_pud(struct vm_area_struct *vma, pud_t pud)
+{
+	struct folio *folio;
+	struct page *page;
+
+	/*
+	 * No other mm features are supports so far (migration/swap/...).
+	 */
+	VM_BUG_ON(!pud_present(pud));
+
+	page = pud_page(pud);
+	VM_BUG_ON_PAGE(!PageHead(page), page);
+	folio = page_folio(page);
+
+	if (!folio_test_dirty(folio) && pud_dirty(pud))
+		folio_mark_dirty(folio);
+	if (!folio_test_referenced(folio) && pud_young(pud))
+		folio_set_referenced(folio);
+
+	folio_remove_rmap_pud(folio, page, vma);
+	add_mm_counter(vma->vm_mm, mm_counter_file(folio), -HPAGE_PUD_NR);
+
+	return folio;
+}
+
 int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		 pud_t *pud, unsigned long addr)
 {
+	struct folio *folio;
 	spinlock_t *ptl;
 	pud_t orig_pud;
+
+	tlb_change_page_size(tlb, HPAGE_PUD_SIZE);
 
 	ptl = __pud_trans_huge_lock(pud, vma);
 	if (!ptl)
@@ -2401,27 +2434,37 @@ int zap_huge_pud(struct mmu_gather *tlb, struct vm_area_struct *vma,
 	orig_pud = pudp_huge_get_and_clear_full(vma, addr, pud, tlb->fullmm);
 	arch_check_zapped_pud(vma, orig_pud);
 	tlb_remove_pud_tlb_entry(tlb, pud, addr);
-	if (vma_is_special_huge(vma)) {
-		spin_unlock(ptl);
-		/* No zero page support yet */
-	} else {
-		/* No support for anonymous PUD pages yet */
-		BUG();
+
+	if (!vma_is_special_huge(vma)) {
+		folio = __zap_huge_file_pud(vma, orig_pud);
+		tlb_remove_page_size(tlb, folio_page(folio, 0), HPAGE_PUD_SIZE);
 	}
+
+	spin_unlock(ptl);
+
 	return 1;
 }
 
 static void __split_huge_pud_locked(struct vm_area_struct *vma, pud_t *pud,
 		unsigned long haddr)
 {
+	struct folio *folio;
+	pud_t orig_pud;
+
 	VM_BUG_ON(haddr & ~HPAGE_PUD_MASK);
 	VM_BUG_ON_VMA(vma->vm_start > haddr, vma);
 	VM_BUG_ON_VMA(vma->vm_end < haddr + HPAGE_PUD_SIZE, vma);
 	VM_BUG_ON(!pud_trans_huge(*pud) && !pud_devmap(*pud));
 
-	count_vm_event(THP_SPLIT_PUD);
+	orig_pud = pudp_huge_get_and_clear(vma->vm_mm, haddr, pud);
+	flush_pud_tlb_range(vma, haddr, haddr + HPAGE_PUD_SIZE);
 
-	pudp_huge_clear_flush(vma, haddr, pud);
+	if (!vma_is_special_huge(vma)) {
+		folio = __zap_huge_file_pud(vma, orig_pud);
+		folio_ref_dec(folio);
+	}
+
+	count_vm_event(THP_SPLIT_PUD);
 }
 
 void __split_huge_pud(struct vm_area_struct *vma, pud_t *pud,
