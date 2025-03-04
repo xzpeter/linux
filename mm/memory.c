@@ -4785,6 +4785,7 @@ vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 
 	return ret;
 }
+
 #else
 vm_fault_t do_set_pmd(struct vm_fault *vmf, struct page *page)
 {

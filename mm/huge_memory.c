@@ -1311,6 +1311,53 @@ vm_fault_t vmf_insert_pfn_pud(struct vm_fault *vmf, pfn_t pfn, bool write)
 	return VM_FAULT_NOPAGE;
 }
 EXPORT_SYMBOL_GPL(vmf_insert_pfn_pud);
+
+vm_fault_t vmf_insert_pud(struct vm_fault *vmf, struct folio *folio)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	bool write = vmf->flags & FAULT_FLAG_WRITE;
+	unsigned long haddr = vmf->address & HPAGE_PUD_MASK;
+	vm_fault_t ret = VM_FAULT_FALLBACK;
+	struct page *page;
+	pud_t entry;
+
+	if (folio_order(folio) != HPAGE_PUD_ORDER)
+		return ret;
+
+	page = &folio->page;
+
+	if (unlikely(folio_test_has_hwpoisoned(folio)))
+		return ret;
+
+	/* To make it simple, fallback for now on ppc64 */
+	if (arch_needs_pgtable_deposit())
+		return ret;
+
+	vmf->ptl = pud_lock(vma->vm_mm, vmf->pud);
+	if (unlikely(!pud_none(*vmf->pud))) {
+		/* See comments for vmf_insert_pmd() */
+		ret = VM_FAULT_NOPAGE;
+		goto out;
+	}
+
+	flush_icache_pages(vma, page, HPAGE_PUD_NR);
+
+	entry = pud_mkhuge(pfn_pud(page_to_pfn(page), vma->vm_page_prot));
+	if (write)
+		entry = maybe_pud_mkwrite(pud_mkdirty(entry), vma);
+
+	add_mm_counter(vma->vm_mm, mm_counter_file(folio), HPAGE_PUD_NR);
+	folio_add_file_rmap_pud(folio, page, vma);
+	set_pud_at(vma->vm_mm, haddr, vmf->pud, entry);
+	update_mmu_cache_pud(vma, haddr, vmf->pud);
+
+	/* fault is handled */
+	ret = 0;
+out:
+	spin_unlock(vmf->ptl);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vmf_insert_pud);
 #endif /* CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD */
 
 void touch_pmd(struct vm_area_struct *vma, unsigned long addr,
