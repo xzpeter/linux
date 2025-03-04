@@ -1026,7 +1026,7 @@ static long kvm_gmem_punch_hole(struct inode *inode, loff_t offset, loff_t len)
 	filemap_invalidate_lock(inode->i_mapping);
 
 	/* TODO: Check if even_cows should be 0 or 1 */
-	unmap_mapping_range(inode->i_mapping, start, len, 0);
+	unmap_mapping_range(inode->i_mapping, offset, len, 0);
 
 	list_for_each_entry(gmem, gmem_list, entry)
 		kvm_gmem_invalidate_begin(gmem, start, end);
