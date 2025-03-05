@@ -10,6 +10,7 @@
 #include <linux/anon_inodes.h>
 #include <linux/memcontrol.h>
 #include <linux/mempolicy.h>
+#include <linux/statfs.h>
 
 #include "kvm_mm.h"
 
@@ -1231,8 +1232,23 @@ static void kvm_gmem_evict_inode(struct inode *inode)
 	clear_inode(inode);
 }
 
+static int kvm_gmem_statfs(struct dentry *dentry, struct kstatfs *buf)
+{
+	struct inode *inode = dentry->d_inode;
+	struct hstate *h;
+
+	simple_statfs(dentry, buf);
+
+	if (is_kvm_gmem_hugetlb(inode)) {
+		h = kvm_gmem_hgmem(inode)->h;
+		buf->f_bsize = 1L << (h->order + PAGE_SHIFT);
+	}
+
+	return 0;
+}
+
 static const struct super_operations kvm_gmem_super_operations = {
-	.statfs		= simple_statfs,
+	.statfs		= kvm_gmem_statfs,
 	.evict_inode	= kvm_gmem_evict_inode,
 };
 
