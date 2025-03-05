@@ -24,6 +24,7 @@
 
 void pgd_clear_bad(pgd_t *pgd)
 {
+	VM_BUG_ON(1);
 	pgd_ERROR(*pgd);
 	pgd_clear(pgd);
 }
@@ -31,6 +32,7 @@ void pgd_clear_bad(pgd_t *pgd)
 #ifndef __PAGETABLE_P4D_FOLDED
 void p4d_clear_bad(p4d_t *p4d)
 {
+	VM_BUG_ON(1);
 	p4d_ERROR(*p4d);
 	p4d_clear(p4d);
 }
@@ -39,6 +41,7 @@ void p4d_clear_bad(p4d_t *p4d)
 #ifndef __PAGETABLE_PUD_FOLDED
 void pud_clear_bad(pud_t *pud)
 {
+	VM_BUG_ON(1);
 	pud_ERROR(*pud);
 	pud_clear(pud);
 }
@@ -51,6 +54,7 @@ void pud_clear_bad(pud_t *pud)
  */
 void pmd_clear_bad(pmd_t *pmd)
 {
+	VM_BUG_ON(1);
 	pmd_ERROR(*pmd);
 	pmd_clear(pmd);
 }
