@@ -882,6 +882,12 @@ static int kvm_gmem_hugetlb_filemap_remove_folios(struct address_space *mapping,
 		index = offset >> PAGE_SHIFT;
 		hash = hugetlb_fault_mutex_lock(mapping, index);
 
+		/*
+		 * Need to unmap the last time here under fault mutex, to
+		 * make sure no concurrent fault() from happening.
+		 */
+		unmap_mapping_range(mapping, lstart, lend, 0);
+
 		folio = filemap_get_folio(mapping, index);
 		if (!IS_ERR(folio)) {
 			/* Drop refcount so that filemap holds only reference. */
