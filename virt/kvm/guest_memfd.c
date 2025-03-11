@@ -265,13 +265,13 @@ struct folio *kvm_gmem_hugetlb_alloc_folio(struct hstate *h,
 	nid = kvm_gmem_get_mpol_node_nodemask(htlb_alloc_mask(h), &mpol,
 					      &nodemask);
 	/*
-	 * charge_cgroup_reservation is false because we didn't make any cgroup
+	 * charge_cgroup_reservation is true because we didn't make any cgroup
 	 * reservations when creating the guest_memfd subpool.
 	 *
 	 * use_hstate_resv is true because we reserved from global hstate when
 	 * creating the guest_memfd subpool.
 	 */
-	folio = hugetlb_alloc_folio(h, mpol, nid, nodemask, false, true);
+	folio = hugetlb_alloc_folio(h, mpol, nid, nodemask, true, true);
 	mpol_cond_put(mpol);
 
 	if (!folio)
@@ -312,17 +312,8 @@ int kvm_gmem_hugetlb_filemap_add_folio(struct address_space *mapping,
 		return ret;
 	}
 
-	/*
-	 * In hugetlb_add_to_page_cache(), there is a call to
-	 * folio_clear_hugetlb_restore_reserve(). This is handled when the pages
-	 * are removed from the page cache in unmap_hugepage_range() ->
-	 * __unmap_hugepage_range() by conditionally calling
-	 * folio_set_hugetlb_restore_reserve(). In kvm_gmem_hugetlb's usage of
-	 * hugetlb, there are no VMAs involved, and pages are never taken from
-	 * the surplus, so when pages are freed, the hstate reserve must be
-	 * restored. Hence, this function makes no call to
-	 * folio_clear_hugetlb_restore_reserve().
-	 */
+	/* After successfully populate the hugetlb folio, clear restore resv */
+	folio_clear_hugetlb_restore_reserve(folio);
 
 	/* mark folio dirty so that it will not be removed from cache/inode */
 	folio_mark_dirty(folio);
@@ -943,9 +934,6 @@ static void kvm_gmem_hugetlb_truncate_folios_range(struct inode *inode,
 
 	num_freed = kvm_gmem_hugetlb_filemap_remove_folios(inode->i_mapping,
 							   h, lstart, lend);
-
-	gbl_reserve = hugepage_subpool_put_pages(hgmem->spool, num_freed);
-	hugetlb_acct_memory(h, -gbl_reserve);
 
 	spin_lock(&inode->i_lock);
 	inode->i_blocks -= blocks_per_huge_page(h) * num_freed;
