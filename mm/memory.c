@@ -4728,8 +4728,18 @@ vm_fault_t vmf_insert_pmd(struct vm_fault *vmf, struct folio *folio)
 	}
 
 	vmf->ptl = pmd_lock(vma->vm_mm, vmf->pmd);
-	if (unlikely(!pmd_none(*vmf->pmd)))
+	if (unlikely(!pmd_none(*vmf->pmd))) {
+		/*
+		 * Here if we see an non-empty pmd populated, returning
+		 * FALLBACK may not be accurate, because FALLBACK normally
+		 * implies "we should keep walking the next level of
+		 * pgtable", however in this case it's still likely the pmd
+		 * is a huge entry.  Slightly abuse NOPAGE here to make the
+		 * fault retry instead.
+		 */
+		ret = VM_FAULT_NOPAGE;
 		goto out;
+	}
 
 	flush_icache_pages(vma, page, HPAGE_PMD_NR);
 
