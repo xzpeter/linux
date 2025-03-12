@@ -753,7 +753,13 @@ static struct folio *kvm_gmem_maybe_split_folio(struct folio *folio, pgoff_t ind
 	nr_pages = 1UL << huge_page_order(h);
 	aligned_index = round_down(index, nr_pages);
 
-	if (!kvm_gmem_is_any_faultable(inode, aligned_index, nr_pages))
+	/*
+	 * Fully shared guest-memfd is not tracked by faultability, but
+	 * always faultable.  Currently, it's only faultable in original
+	 * folio size, hence no split is needed.
+	 */
+	if (!kvm_gmem_is_any_faultable(inode, aligned_index, nr_pages) ||
+	    kvm_gmem_is_shared(inode))
 		return folio;
 
 	/* Drop lock and refcount in preparation for splitting. */
@@ -2235,6 +2241,15 @@ static int kvm_gmem_try_set_faultable_slot(struct kvm_memory_slot *slot,
 	end_offset = end - slot->base_gfn + slot->gmem.pgoff;
 
 	inode = file_inode(file);
+
+	/*
+	 * It is probably a bug to bind a completely shared guest-memfd to
+	 * a kvm memslot.  If it happens, kicks off a warning.  Fully
+	 * shared guest-memfd should always be faultable and not tracked by
+	 * faultability structures.
+	 */
+	if (WARN_ON_ONCE(kvm_gmem_is_shared(inode)))
+		return 0;
 
 	/*
 	 * Use filemap_invalidate_lock_shared() to make sure
