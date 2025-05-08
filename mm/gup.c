@@ -179,6 +179,22 @@ int __must_check try_grab_folio(struct folio *folio, int refs,
 }
 
 /**
+ * pin_user_page() - dma-pinned a page
+ * @page:            pointer to page to be pinned
+ *
+ * NOTE!  One should normally use pin_user_pages*() API instead.  This
+ * should be only useful in extremely special cases, like struct page under
+ * VM_PFNMAP.
+ *
+ * Returns: 0 if success, negative if pin failed
+ */
+int pin_user_page(struct page *page)
+{
+	return try_grab_folio(page_folio(page), 1, FOLL_PIN);
+}
+EXPORT_SYMBOL(pin_user_page);
+
+/**
  * unpin_user_page() - release a dma-pinned page
  * @page:            pointer to page to be released
  *

@@ -1809,6 +1809,64 @@ static ssize_t iov_iter_extract_kvec_pages(struct iov_iter *i,
 	return size;
 }
 
+/**
+ * iov_iter_pin_user_pages() - pin user pages for iov iter ops
+ *
+ * @start:      starting user address
+ * @nr_pages:   number of pages from start to pin
+ * @gup_flags:  flags modifying pin behaviour
+ * @pages:      array that receives pointers to the pages pinned.
+ *              Should be at least nr_pages long.
+ *
+ * Almost a wrapper for pin_user_pages_fast(), but also supports PFNMAPs
+ * where in extremely rare cases there's actually struct page available
+ * (e.g. device drivers playing trick with PFNMAP by injecting allocated
+ * RAM pages).
+ */
+static inline int
+iov_iter_pin_user_pages(unsigned long start, int nr_pages,
+			unsigned int gup_flags, struct page **pages)
+{
+	struct follow_pfnmap_args args;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm;
+	int res, ret;
+
+	res = pin_user_pages_fast(start, nr_pages, gup_flags, pages);
+
+	/* Normally, GUP should really work already.. */
+	if (likely(res > 0))
+		return res;
+
+	/*
+	 * This is to take care of an extremely rare case: retry in case if
+	 * it's a PFNMAP that has struct page backed.
+	 *
+	 * So far it does the minimum we need in the failure path.  It
+	 * assumes the PFNMAP entries must exist in the pgtables already,
+	 * and it resolves one PFN at a time.
+	 */
+	mm = current->mm;
+	mmap_read_lock(mm);
+	vma = vma_lookup(current->mm, start);
+	if (!vma)
+		goto out;
+
+	args.vma = vma;
+	args.address = start;
+
+	ret = follow_pfnmap_start(&args);
+	if (ret)
+		goto out;
+	/* Did we find a special page under VM_PFNMAP? */
+	if (pfn_valid(args.pfn) && pin_user_page(pfn_to_page(args.pfn)))
+		res = 1;
+	follow_pfnmap_end(&args);
+out:
+	mmap_read_unlock(mm);
+	return res;
+}
+
 /*
  * Extract a list of contiguous pages from a user iterator and get a pin on
  * each of them.  This should only be used if the iterator is user-backed
@@ -1846,7 +1904,7 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 	maxpages = want_pages_array(pages, maxsize, offset, maxpages);
 	if (!maxpages)
 		return -ENOMEM;
-	res = pin_user_pages_fast(addr, maxpages, gup_flags, *pages);
+	res = iov_iter_pin_user_pages(addr, maxpages, gup_flags, *pages);
 	if (unlikely(res <= 0))
 		return res;
 	maxsize = min_t(size_t, maxsize, res * PAGE_SIZE - offset);
