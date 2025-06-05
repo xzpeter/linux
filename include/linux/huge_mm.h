@@ -549,10 +549,11 @@ thp_get_unmapped_area_vmflags(struct file *filp, unsigned long addr,
 	return 0;
 }
 
-unsigned long mm_get_unmapped_area_aligned(struct file *filp,
-		unsigned long addr, unsigned long len,
-		loff_t off, unsigned long flags, unsigned long size,
-		vm_flags_t vm_flags)
+static inline unsigned long
+mm_get_unmapped_area_aligned(struct file *filp,
+			     unsigned long addr, unsigned long len,
+			     loff_t off, unsigned long flags, unsigned long size,
+			     vm_flags_t vm_flags)
 {
 	return 0;
 }
