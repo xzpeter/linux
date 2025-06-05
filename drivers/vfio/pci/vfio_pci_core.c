@@ -1746,7 +1746,7 @@ static vm_fault_t vfio_pci_mmap_huge_fault(struct vm_fault *vmf,
 out_unlock:
 	up_read(&vdev->memory_lock);
 out:
-	dev_dbg_ratelimited(&vdev->pdev->dev,
+	dev_dbg(&vdev->pdev->dev,
 			   "%s(,order = %d) BAR %ld page offset 0x%lx: 0x%x\n",
 			    __func__, order,
 			    vma->vm_pgoff >>
