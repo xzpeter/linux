@@ -1661,7 +1661,7 @@ unsigned long vfio_pci_core_get_unmapped_area(struct vfio_device *device,
 	struct vfio_pci_core_device *vdev =
 		container_of(device, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
-	unsigned long ret, size, phys_len, req_start, pfn;
+	unsigned long ret, size, phys_len, req_start, phys_addr;
 	unsigned int index;
 
 	index = pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
@@ -1675,8 +1675,8 @@ unsigned long vfio_pci_core_get_unmapped_area(struct vfio_device *device,
 	phys_len = PAGE_ALIGN(pci_resource_len(pdev, index));
 
 	/*
-	 * Make sure we at least can get a valid PFN to do the math.  This
-	 * will probably fail mmap() later..
+	 * Make sure we at least can get a valid physical address to do the
+	 * math.  If this happens, it will probably fail mmap() later..
 	 */
 	if (req_start >= phys_len)
 		goto fallback;
@@ -1690,9 +1690,10 @@ unsigned long vfio_pci_core_get_unmapped_area(struct vfio_device *device,
 		/* If the bar is even less than PMD_SIZE, don't bother */
 		goto fallback;
 
-	/* Calculate the 1st PFN to be mapped */
-	pfn = pci_resource_start(pdev, index) + req_start;
-	ret = mm_get_unmapped_area_aligned(file, addr, len, pfn, flags, size, 0);
+	/* Calculate the start of physical address to be mapped */
+	phys_addr = pci_resource_start(pdev, index) + req_start;
+	ret = mm_get_unmapped_area_aligned(file, addr, len, phys_addr,
+					   flags, size, 0);
 	if (ret)
 		return ret;
 fallback:
