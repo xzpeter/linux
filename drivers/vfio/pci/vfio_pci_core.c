@@ -1681,13 +1681,13 @@ unsigned long vfio_pci_core_get_unmapped_area(struct vfio_device *device,
 	if (req_start >= phys_len)
 		goto fallback;
 
+	phys_len = MIN(phys_len, len);
 	/* Choose the alignment */
 	if (IS_ENABLED(CONFIG_ARCH_SUPPORTS_PUD_PFNMAP) && phys_len >= PUD_SIZE)
 		size = PUD_SIZE;
 	else if (phys_len >= PMD_SIZE)
 		size = PMD_SIZE;
 	else
-		/* If the bar is even less than PMD_SIZE, don't bother */
 		goto fallback;
 
 	/* Calculate the start of physical address to be mapped */
